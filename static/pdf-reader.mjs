@@ -19,6 +19,7 @@ function selectedOn(session, row) {
 }
 
 function disposeRow(row) {
+  row.cancelDrag?.();row.cancelDrag=null;
   ++row.token;row.frame.onmouseup=null;
   row.renderTask?.cancel();row.textLayer?.cancel();
   if(row.canvas){row.canvas.width=0;row.canvas.height=0;}
@@ -41,12 +42,13 @@ function statusText(session) {
   const row=session.rows[session.pageNumber-1];
   session.status.textContent=row?.state==='error' ? '此页加载失败，可点击页内“重新加载”重试。' :
     row?.state==='ready' && !row.hasText ? '连续滚动阅读 · 此页无可选文字，请使用“框选图片/区域”。' :
-    session.tool==='region' ? '连续滚动阅读 · 拖出矩形选择图片、公式或区域；滚轮可继续翻页。' :
+    session.tool==='region' ? '连续滚动阅读 · 拖出矩形选择图片、公式或区域；按 Esc 取消框选，滚轮可继续翻页。' :
     '连续滚动阅读 · 滚轮上下翻页；拖选原文文字后可提问。';
 }
 
 function applyTools(session) {
   for(const row of session.rows){
+    if(session.tool!=='region')row.cancelDrag?.();
     if(row.region)row.region.hidden=session.tool!=='region';
     if(row.marks){const selected=selectedOn(session,row);highlight(row.marks,selected?.rects,selected?.kind);}
   }
@@ -65,28 +67,35 @@ function bindSelection(session,row,text,marks,region) {
     const rects=Array.from(selection.getRangeAt(0).getClientRects()).map(r=>normalizedRect(r,frame.getBoundingClientRect())).filter(Boolean).slice(0,256);
     if(rects.length)session.onSelection?.({kind:'text',text:selectedText,rects,page:row.number},{x:event.clientX,y:event.clientY});
   };
-  let start=null;
+  let start=null,pointerId=null;
   const restore=()=>{const selected=selectedOn(session,row);highlight(marks,selected?.rects,selected?.kind);};
+  row.cancelDrag=()=>{
+    start=null;row.dragging=false;
+    const captured=pointerId;pointerId=null;
+    if(captured!==null&&region.hasPointerCapture(captured))region.releasePointerCapture(captured);
+    restore();
+  };
   region.onpointerdown=event=>{
-    if(event.button!==0)return;event.preventDefault();window.getSelection()?.removeAllRanges();
-    start={x:event.clientX,y:event.clientY};row.dragging=true;
+    if(event.button!==0||session.tool!=='region'||start)return;event.preventDefault();window.getSelection()?.removeAllRanges();
+    start={x:event.clientX,y:event.clientY};pointerId=event.pointerId;row.dragging=true;
     region.setPointerCapture(event.pointerId);highlight(marks,[]);
   };
   region.onpointermove=event=>{
-    if(!start)return;
+    if(!start||event.pointerId!==pointerId)return;
     const drawn=dragRect(start,{x:event.clientX,y:event.clientY},frame.getBoundingClientRect());
     highlight(marks,drawn?[drawn]:[],'region');
   };
   region.onpointerup=event=>{
-    if(!start)return;
+    if(!start||event.pointerId!==pointerId)return;
     const bounds=frame.getBoundingClientRect(),drawn=dragRect(start,{x:event.clientX,y:event.clientY},bounds);
-    start=null;row.dragging=false;
+    start=null;pointerId=null;row.dragging=false;
     if(region.hasPointerCapture(event.pointerId))region.releasePointerCapture(event.pointerId);
     if(!drawn||(drawn[2]-drawn[0])*bounds.width<6||(drawn[3]-drawn[1])*bounds.height<6){restore();return;}
     highlight(marks,[drawn],'region');
     session.onSelection?.({kind:'region',text:'',rects:[drawn],page:row.number},{x:event.clientX,y:event.clientY});
   };
-  region.onpointercancel=()=>{start=null;row.dragging=false;restore();};
+  region.onpointercancel=()=>row.cancelDrag?.();
+  region.onlostpointercapture=()=>{if(start)row.cancelDrag?.();};
 }
 
 async function renderRow(session,row) {

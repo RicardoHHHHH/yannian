@@ -30,7 +30,7 @@ const state = {view:'library', projectId:null, library:{papers:[],projects:[],id
  ideas:[], idea:null, analyses:[], filter:'', ideaFilter:'all', discover:null, query:'', venue:'all', searchBusy:false,
  analysisBusy:false, searchGeneration:0, searchJob:null, searchDepth:'deep', searchWeb:true, searchLanguage:'english', searchOrder:'relevance', searchPage:1, searchAudit:false, pdfFetching:null,
  layout:readLayoutPreferences(),urlImport:{url:'',projectId:'',busy:false,result:null,error:''}};
-let toastTimer, searchTimer;
+let toastTimer, searchTimer, pdfSelectionVersion=0;
 function clampAssistantRatio(value){const n=Number(value);return Number.isFinite(n)&&n>0?Math.max(.2,Math.min(.7,n)):.34;}
 function applySplitWidth(){
  const ratio=clampAssistantRatio(state.layout.assistantRatio),workspace=$('#workspace'),handle=$('#reader-splitter');
@@ -193,17 +193,29 @@ function mountPDF(){
    onScroll:()=>{$('#selection-menu').hidden=true;},onError:e=>toast('PDF 原页加载失败：'+e.message,true)});
 }
 window.addEventListener?.('yannian-pdf-ready',()=>{if(state.view==='reader'&&state.readerMode==='original')mountPDF();});
+function cancelPDFSelection(){
+ if(state.view!=='reader'||state.readerMode!=='original')return false;
+ const menu=$('#selection-menu');
+ if(state.pdfTool!=='region'&&!state.pdfSelection&&menu.hidden)return false;
+ ++pdfSelectionVersion;
+ state.pdfTool='text';state.pdfSelection=null;state.para=null;state.selectedText='';menu.hidden=true;
+ window.getSelection()?.removeAllRanges();
+ $$('[data-pdf-tool]').forEach(b=>b.classList.toggle('active',b.dataset.pdfTool==='text'));
+ if(document.activeElement?.matches?.('[data-pdf-tool="region"]'))$('[data-pdf-tool="text"]')?.focus({preventScroll:true});
+ mountPDF();updateReaderLocation();renderAssistant();
+ return true;
+}
 function showPDFSelectionMenu(candidate,position){
  if(state.chatBusy){toast('当前回答正在生成，请稍后选择新的提问范围。');return;}
- const paperId=state.paper.id,menu=$('#selection-menu');
+ const paperId=state.paper.id,menu=$('#selection-menu'),version=++pdfSelectionVersion;
  menu.hidden=false;menu.style.left=Math.max(10,Math.min(window.innerWidth-240,position.x))+'px';menu.style.top=Math.max(10,Math.min(window.innerHeight-55,position.y+8))+'px';
  $('#selection-ask').textContent=candidate.kind==='region'?'分析选中区域':'问选中文字';
  const use=async(forIdea)=>{
-  if(state.paper.id!==paperId||state.chatBusy)return;
+  if(state.paper.id!==paperId||state.chatBusy||version!==pdfSelectionVersion)return;
   menu.hidden=true;
   try{
    const selected=await api('/papers/'+paperId+'/selections',{method:'POST',body:candidate});
-   if(state.paper.id!==paperId)return;
+   if(state.paper.id!==paperId||version!==pdfSelectionVersion)return;
    state.pdfSelection=selected;state.para=state.paper.paragraphs.find(p=>p.id===selected.paragraph_id)||null;
    state.selectedText=selected.text;state.page=selected.page;
    window.getSelection()?.removeAllRanges();updatePDFPage(selected.page);renderAssistant();mountPDF();
@@ -443,7 +455,13 @@ document.addEventListener('click',async event=>{
   }
  }catch(e){toast(e.message,true);}
 });
-document.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.matches('[data-open-paper],[data-open-idea]')){e.preventDefault();e.target.click();}});
+document.addEventListener('keydown',e=>{
+ if(e.key==='Escape'&&!e.isComposing&&!e.defaultPrevented&&!$('#modal').open&&!e.target.matches('select')){
+  if(cancelPDFSelection())e.preventDefault();
+  return;
+ }
+ if((e.key==='Enter'||e.key===' ')&&e.target.matches('[data-open-paper],[data-open-idea]')){e.preventDefault();e.target.click();}
+});
 document.addEventListener('mouseup',event=>{
  if(event.target.closest('#selection-menu'))return;
  const menu=$('#selection-menu');if(state.view==='reader'&&state.readerMode==='original'){if(!event.target.closest('.pdf-canvas-page'))menu.hidden=true;return;}menu.hidden=true;if(state.view!=='reader')return;$('#selection-ask').textContent='问选中文字';

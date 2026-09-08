@@ -15,12 +15,13 @@ class Element {
   getContext(){return {};}
   contains(node){return node===this||this.children.some(child=>child.contains(node));}
   getBoundingClientRect(){return {left:0,top:0,width:parseFloat(this.style.width)||600,height:parseFloat(this.style.height)||800};}
-  setPointerCapture(){}
-  hasPointerCapture(){return false;}
+  setPointerCapture(id){this.capturedPointer=id;}
+  hasPointerCapture(id){return this.capturedPointer===id;}
+  releasePointerCapture(id){if(this.hasPointerCapture(id)){this.capturedPointer=null;this.onlostpointercapture?.({pointerId:id});}}
 }
 const host=new Element(),scroll=new Element(),status=new Element();
 host.querySelector=selector=>selector==='.pdf-scroll'?scroll:status;
-let nativeSelection={isCollapsed:true,removeAllRanges(){nativeSelection={isCollapsed:true};}};
+let nativeSelection={isCollapsed:true,removeAllRanges(){this.isCollapsed=true;}};
 const frames=new Map();let frameId=0,documentCount=0,cancelled=0;
 const changes=[],selections=[],errors=[];
 const delayed=[];
@@ -71,6 +72,24 @@ await reader.mount({...options,pageNumber:12,tool:'region'});await flush();
 assert.equal(scroll.scrollTop,position);assert.equal(find(12,'pdf-canvas'),canvas);
 assert.equal(find(12,'pdf-region-tool').hidden,false);
 const region=find(12,'pdf-region-tool');
+const beforeCancel=selections.length;
+region.onpointerdown({button:0,clientX:60,clientY:160,pointerId:2,preventDefault(){}});
+region.onpointermove({clientX:300,clientY:400,pointerId:2});
+assert.equal(find(12,'pdf-marks').children.length,1);
+assert.equal(region.hasPointerCapture(2),true);
+await reader.mount({...options,pageNumber:12,tool:'text',selection:null});await flush();
+assert.equal(region.hidden,true);assert.equal(region.hasPointerCapture(2),false);
+assert.equal(find(12,'pdf-marks').children.length,0);
+assert.equal(scroll.scrollTop,position);assert.equal(find(12,'pdf-canvas'),canvas);
+region.onpointerup({clientX:300,clientY:400,pointerId:2});
+assert.equal(selections.length,beforeCancel,'Releasing after Escape must not complete the cancelled rectangle.');
+await reader.mount({...options,pageNumber:12,tool:'region'});await flush();
+region.onpointerdown({button:0,clientX:60,clientY:160,pointerId:3,preventDefault(){}});
+region.onpointermove({clientX:300,clientY:400,pointerId:3});
+region.onpointercancel({pointerId:3});
+assert.equal(region.hasPointerCapture(3),false);assert.equal(find(12,'pdf-marks').children.length,0);
+region.onpointerup({clientX:300,clientY:400,pointerId:3});
+assert.equal(selections.length,beforeCancel);
 region.onpointerdown({button:0,clientX:60,clientY:160,pointerId:1,preventDefault(){}});
 region.onpointerup({clientX:300,clientY:400,pointerId:1});
 assert.equal(selections.at(-1).page,12);assert.deepEqual(Array.from(selections.at(-1).rects[0]),[.1,.2,.5,.5]);
@@ -81,6 +100,11 @@ const zoomed=layout.layoutPages(options.pageSizes,'1.5',600);
 const restored=layout.capturePosition(zoomed,scroll.scrollTop);
 assert.equal(restored.page,12);assert.ok(Math.abs(restored.fraction-.375)<1e-9);
 assert.equal(find(12,'pdf-marks').children.length,1);assert.equal(find(13,'pdf-marks')?.children.length||0,0);
+const zoomedCanvas=find(12,'pdf-canvas'),zoomedPosition=scroll.scrollTop;
+await reader.mount({...options,pageNumber:12,tool:'text',selection:null,zoom:'1.5'});await flush();
+assert.equal(find(12,'pdf-marks').children.length,0,'Cancelling a saved selection removes its highlight.');
+assert.equal(find(12,'pdf-canvas'),zoomedCanvas);assert.equal(scroll.scrollTop,zoomedPosition);
+await reader.mount({...options,pageNumber:12,tool:'text',selection:selected,zoom:'1.5'});await flush();
 const text=find(12,'textLayer'),span=text.children[0];
 nativeSelection={isCollapsed:false,rangeCount:1,anchorNode:span,focusNode:span,toString:()=> 'A selected passage',getRangeAt:()=>({getClientRects:()=>[{left:120,top:320,right:600,bottom:800}]})};
 frame(12).onmouseup({clientX:600,clientY:800});

@@ -6,13 +6,14 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const nodes = new Map();
 const storedValues = new Map();
+const documentListeners = new Map();
 function classes(){const values=new Set();return {toggle(name,on){on=on??!values.has(name);if(on)values.add(name);else values.delete(name);return on;},add(name){values.add(name);},remove(name){values.delete(name);},contains(name){return values.has(name);}};}
 function node(selector) {
   if (!nodes.has(selector)) nodes.set(selector, {innerHTML:'',textContent:'',value:'',classList:classes(),style:{},attributes:{},setAttribute(k,v){this.attributes[k]=v;},getAttribute(k){return this.attributes[k];},scrollTop:0,scrollTo(a,b){this.scrollTop=typeof a==='object'?a.top:b;},getBoundingClientRect(){return this.rect||{top:0,left:0,width:800,height:800};},focus(){},scrollIntoView(){},setSelectionRange(){},showModal(){this.open=true;},close(){this.open=false;},querySelector:node,querySelectorAll:()=>[]});
   return nodes.get(selector);
 }
 const context = vm.createContext({
- document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){}},
+ document:{querySelector:node,querySelectorAll:()=>[],addEventListener(type,fn){documentListeners.set(type,fn);}},
  location:{origin:'http://127.0.0.1:8765',pathname:'/',hash:''},
  history:{replaceState(){}}, URL, URLSearchParams, console,
  fetch:()=>new Promise(()=>{}), setTimeout,clearTimeout,
@@ -329,4 +330,33 @@ async function checkAttachmentLifecycle(){
  assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Keep this draft');
  passed++;console.log('PASS a different selection and new chat get an attachment; removing it preserves the question draft');
 }
-checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(checkAttachmentLifecycle).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});
+async function checkPDFEscape(){
+ run(`state.view='reader';state.readerMode='original';state.pdfTool='region';state.pdfSelection={...fixtureSelection};state.para=fixturePaper.paragraphs[0];state.selectedText='Caption';state.page=2;
+ state.messages=[{role:'user',content:'Saved question',attachments:[{...fixtureSelection}]}];state.conversationId='esc-chat';state.chatBusy=true;state.chatRun={id:'still-running',status:'running'};saveChatDraft('Keep my draft');`);
+ node('#selection-menu').hidden=false;node('#modal').open=false;
+ let prevented=0;
+ const escape=overrides=>documentListeners.get('keydown')({key:'Escape',target:{matches:()=>false},preventDefault(){prevented++;},...overrides});
+ node('#modal').open=true;escape();assert.equal(run('state.pdfTool'),'region');
+ node('#modal').open=false;escape({isComposing:true});assert.equal(run('state.pdfTool'),'region');
+ escape({target:{matches:selector=>selector==='select'}});assert.equal(run('state.pdfTool'),'region');
+ escape();
+ assert.equal(prevented,1);assert.equal(run('state.pdfTool'),'text');assert.equal(node('#selection-menu').hidden,true);
+ assert.equal(run('state.pdfSelection'),null);assert.equal(run('state.para'),null);assert.equal(run('state.selectedText'),'');
+ assert.equal(run('window.lastPDFMount.tool'),'text');assert.equal(run('window.lastPDFMount.selection'),null);
+ assert.equal(run('state.page'),2);assert.equal(run('state.chatRun.id'),'still-running');assert.equal(run('state.chatBusy'),true);
+ assert.equal(run('state.messages[0].attachments[0].id'),'selection-a');
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Keep my draft');
+ escape();assert.equal(prevented,1,'Idle Escape should be left to the browser.');
+ passed++;console.log('PASS Escape exits region mode and clears current selection while preserving reading position, draft, history and active answer');
+
+ run(`state.chatBusy=false;state.pdfTool='region';state.pdfSelection=null;
+ api=()=>new Promise(resolve=>window.finishSelectionSave=resolve);
+ showPDFSelectionMenu({kind:'region',rects:[[.1,.1,.5,.5]],text:'',page:2},{x:100,y:100});`);
+ const saving=node('#selection-ask').onclick();
+ escape();run(`window.finishSelectionSave(fixtureSelection)`);await saving;
+ assert.equal(run('state.pdfSelection'),null);assert.equal(run('state.pdfTool'),'text');
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Keep my draft');
+ assert.equal(run('state.messages.length'),1);
+ passed++;console.log('PASS a selection save finishing after Escape cannot reopen the attachment or replace the draft');
+}
+checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(checkAttachmentLifecycle).then(checkPDFEscape).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});
