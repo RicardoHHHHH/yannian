@@ -26,13 +26,33 @@ const icons = {
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.file}</svg>`;
 const statuses = {spark:'灵感',exploring:'探索中',testing:'验证中',parked:'暂存'};
 const state = {view:'library', projectId:null, library:{papers:[],projects:[],idea_count:0}, settings:{}, paper:null,
- para:null, selectedText:'', readerMode:'original', pdfZoom:'fit', pdfTool:'text', pdfSelection:null, page:1, messages:[], conversationId:null, chatBusy:false,
+ para:null, selectedText:'', readerMode:'original', pdfZoom:'fit', pdfTool:'text', pdfSelection:null, page:1, messages:[], conversationId:null, chatBusy:false, chatRun:null, chatRenderedKey:null, chatContextOpen:false,
  ideas:[], idea:null, analyses:[], filter:'', ideaFilter:'all', discover:null, query:'', venue:'all', searchBusy:false,
  analysisBusy:false, searchGeneration:0, searchJob:null, searchDepth:'deep', searchWeb:true, searchLanguage:'english', searchOrder:'relevance', searchPage:1, searchAudit:false, pdfFetching:null,
  layout:readLayoutPreferences(),urlImport:{url:'',projectId:'',busy:false,result:null,error:''}};
 let toastTimer, searchTimer;
+function clampAssistantRatio(value){const n=Number(value);return Number.isFinite(n)&&n>0?Math.max(.2,Math.min(.7,n)):.34;}
+function applySplitWidth(){
+ const ratio=clampAssistantRatio(state.layout.assistantRatio),workspace=$('#workspace'),handle=$('#reader-splitter');
+ workspace.style.setProperty?.('--assistant-width',(ratio*100)+'%');
+ handle?.setAttribute('aria-valuenow',String(Math.round(ratio*100)));
+ handle?.setAttribute('aria-valuetext','对话区 '+Math.round(ratio*100)+'%');
+}
+function setSplitWidth(ratio,save=true){
+ state.layout.assistantRatio=clampAssistantRatio(ratio);applySplitWidth();
+ if(save)try{localStorage.setItem('yannian-layout',JSON.stringify(state.layout));}catch{}
+}
+function setupReaderSplitter(){
+ const handle=$('#reader-splitter');if(!handle)return;let pointer=null;
+ handle.onpointerdown=e=>{if(e.button!==0)return;pointer=e.pointerId;handle.setPointerCapture?.(pointer);$('#workspace').classList.add('resizing-reader');e.preventDefault();};
+ handle.onpointermove=e=>{if(e.pointerId!==pointer)return;const box=$('#workspace').getBoundingClientRect();if(box.width>0)setSplitWidth((box.left+box.width-e.clientX)/box.width,false);};
+ const end=e=>{if(pointer!==e.pointerId)return;pointer=null;$('#workspace').classList.remove('resizing-reader');setSplitWidth(state.layout.assistantRatio);};
+ handle.onpointerup=end;handle.onpointercancel=end;handle.onlostpointercapture=end;
+ handle.ondblclick=()=>setSplitWidth(.34);
+ handle.onkeydown=e=>{if(!['ArrowLeft','ArrowRight','Home'].includes(e.key))return;e.preventDefault();setSplitWidth(e.key==='Home'?.34:clampAssistantRatio(state.layout.assistantRatio)+(e.key==='ArrowLeft'?.02:-.02));};
+}
 function readLayoutPreferences(){
- try{const saved=JSON.parse(localStorage.getItem('yannian-layout')||localStorage.getItem('yanji-layout')||'{}');return {sidebarCollapsed:saved.sidebarCollapsed===true,assistantCollapsed:saved.assistantCollapsed===true};}catch{return {sidebarCollapsed:false,assistantCollapsed:false};}
+ try{const saved=JSON.parse(localStorage.getItem('yannian-layout')||localStorage.getItem('yanji-layout')||'{}');return {sidebarCollapsed:saved.sidebarCollapsed===true,assistantCollapsed:saved.assistantCollapsed===true,assistantRatio:clampAssistantRatio(saved.assistantRatio)};}catch{return {sidebarCollapsed:false,assistantCollapsed:false,assistantRatio:.34};}
 }
 function applyLayout(){
  $('#navigation-sidebar').hidden=state.layout.sidebarCollapsed;
@@ -42,6 +62,7 @@ function applyLayout(){
   button.innerHTML=icon(shape)+'<span>'+text+'</span>';button.title=text+'栏';button.setAttribute('aria-label',text+'栏');button.setAttribute('aria-expanded',String(!collapsed));
  }
  $('#assistant-toggle').hidden=state.view!=='reader';
+ applySplitWidth();
 }
 function togglePanel(panel,collapsed){
  const key=panel==='sidebar'?'sidebarCollapsed':'assistantCollapsed';
@@ -124,6 +145,7 @@ async function openPaper(id,paragraphId=null,pageNumber=null){
  state.messages=[];state.conversationId=null;state.selectedText='';state.pdfSelection=null;state.readerMode='original';state.pdfZoom='fit';$('#selection-menu').hidden=true;
  history.replaceState(null,'','#paper='+id+(paragraphId?'&paragraph='+paragraphId:''));
  renderSidebar();renderReader();renderAssistant();$('#main-pane')?.scrollTo?.(0,0);window.scrollTo(0,0);
+ await restoreChat();
  if(paragraphId)setTimeout(()=>$('#para-'+paragraphId)?.scrollIntoView({block:'center',behavior:'smooth'}),80);
 }
 function renderReader(){
@@ -183,10 +205,10 @@ function showPDFSelectionMenu(candidate,position){
    const selected=await api('/papers/'+paperId+'/selections',{method:'POST',body:candidate});
    if(state.paper.id!==paperId)return;
    state.pdfSelection=selected;state.para=state.paper.paragraphs.find(p=>p.id===selected.paragraph_id)||null;
-   state.selectedText=selected.text;state.page=selected.page;state.messages=[];state.conversationId=null;
+   state.selectedText=selected.text;state.page=selected.page;state.chatContextOpen=true;
    window.getSelection()?.removeAllRanges();updatePDFPage(selected.page);renderAssistant();mountPDF();
    if(forIdea)ideaModal({quote:selected.text||'PDF 第 '+selected.page+' 页的框选区域',paperId,paragraphId:selected.paragraph_id,selectionId:selected.id});
-   else{togglePanel('assistant',false);$('#chat-question').value=candidate.kind==='region'?'请分析这个选区，解释图表、公式或流程表达的含义，以及它如何支持论文的结论。':'';$('#chat-question').focus();$('#assistant-panel').scrollIntoView?.({block:'nearest',behavior:'smooth'});toast('选区已附到右侧对话，输入问题后发送。');}
+   else{togglePanel('assistant',false);$('#chat-question').value=candidate.kind==='region'?'请分析这个选区，解释图表、公式或流程表达的含义，以及它如何支持论文的结论。':'';saveChatDraft($('#chat-question').value);$('#chat-question').focus();$('#assistant-panel').scrollIntoView?.({block:'nearest',behavior:'smooth'});toast('选区已附到右侧对话，输入问题后发送。');}
   }catch(e){toast(e.message,true);}
  };
  $('#selection-ask').onclick=()=>use(false);$('#selection-idea').onclick=()=>use(true);
@@ -194,7 +216,6 @@ function showPDFSelectionMenu(candidate,position){
 async function openPDFSelection(id){
  const selected=await api('/selections/'+id);
  if(state.paper?.id!==selected.paper_id||state.view!=='reader')await openPaper(selected.paper_id);
- if(state.pdfSelection?.id!==selected.id){state.messages=[];state.conversationId=null;}
  state.pdfSelection=selected;state.para=state.paper.paragraphs.find(p=>p.id===selected.paragraph_id)||null;
  const alreadyReading=state.readerMode==='original'&&Boolean($('#pdf-reader'));
  state.selectedText=selected.text;state.page=selected.page;state.readerMode='original';
@@ -203,37 +224,9 @@ async function openPDFSelection(id){
 }
 function selectParagraph(id,focus=true){
  if(state.chatBusy){toast('当前回答正在生成，请稍后切换对话。');return;}
- state.pdfSelection=null;state.para=state.paper.paragraphs.find(p=>p.id===id)||null;state.selectedText='';$('#selection-menu').hidden=true;state.page=state.para?.page||state.page;state.messages=[];state.conversationId=null;
+ state.pdfSelection=null;state.para=state.paper.paragraphs.find(p=>p.id===id)||null;state.selectedText='';$('#selection-menu').hidden=true;state.page=state.para?.page||state.page;state.chatContextOpen=Boolean(id);
  $$('.paragraph.selected').forEach(e=>e.classList.remove('selected'));$('#para-'+id)?.classList.add('selected');
  if(state.readerMode==='original')renderReader();renderAssistant();if(focus){togglePanel('assistant',false);$('#chat-question')?.focus();}
-}
-function renderAssistant(){
- const p=state.para,selection=state.pdfSelection;
- $('#assistant-panel').innerHTML=`<div class="assistant-header"><div class="assistant-title"><span>✧</span> 一起读论文</div><div class="assistant-head-actions"><button class="icon-button" title="历史对话" aria-label="历史对话" data-action="history">${icon('history')}</button><button class="icon-button" title="新对话" aria-label="新对话" data-action="new-chat">＋</button></div></div>
- <div class="assistant-context"><div class="context-label"><span>${selection?(selection.kind==='region'?'框选区域':'选中文字')+' · 第 '+selection.page+' 页':p?'当前段落 · 第 '+p.page+' 页':'当前论文 · 检索相关原文'}</span>${p||selection?'<button data-action="clear-para" title="清除选区">×</button>':''}</div>${selection?.kind==='region'?`<img class="selection-preview" src="${esc(selection.image_url)}" alt="将发送给模型的 PDF 选区截图">`:''}<blockquote class="context-quote selection-context-text">${esc(state.selectedText||p?.text||(selection?'已选择图片区域':state.paper?.title)||'')}</blockquote>${selection?`<div class="selection-actions"><button data-selection-source="${selection.id}">回到原选区</button><button data-selection-idea="${selection.id}">记为 idea</button></div>`:''}</div>
- <div class="assistant-messages" id="messages">${messageMarkup()}${state.chatBusy?'<div class="loading"><span class="spinner"></span> 正在结合论文思考…</div><div class="loading-shimmer"></div><div class="loading-shimmer"></div><div class="loading-shimmer"></div>':''}</div>
- <div class="assistant-composer"><div class="composer-box"><textarea id="chat-question" aria-label="向 AI 提问" placeholder="这一段为什么这样设计？我有一个想法…" ${state.chatBusy?'disabled':''}></textarea><div class="composer-footer"><label><input type="checkbox" id="include-page" ${!selection&&!state.paper?.paragraphs.length&&state.paper?.has_pdf?'checked':''} ${!state.paper?.has_pdf?'disabled':''}> ${selection?'再附选区所在整页':'附上本页图像'}</label><button class="button primary small" id="send-chat" ${state.chatBusy?'disabled':''}>发送 ${icon('arrow')}</button></div></div><p class="composer-hint">${state.settings.ready?'Enter 发送 · Shift + Enter 换行':'尚未配置模型 · 点击左下角「模型设置」'}</p></div>`;
- $('#send-chat').onclick=sendChat;
- $('#chat-question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendChat();}};
- const scroll=$('#messages');scroll.scrollTop=scroll.scrollHeight;
-}
-function messageMarkup(){
- if(!state.messages.length)return `<div class="assistant-welcome"><div class="spark">✧</div><h3>${state.para?'从这一段，往深处想。':'带着一个问题开始阅读。'}</h3><p>我会结合选中的段落和相关原文回答，<br>并把依据留在可以返回的地方。</p><div class="prompt-suggestions">${['用直观的例子解释这里的核心思想','这一方法依赖哪些关键假设？','实验真的支持作者的结论吗？','这里有哪些值得验证的改进方向？'].map(t=>`<button data-prompt="${esc(t)}">${esc(t)} ↗</button>`).join('')}</div></div>`;
- return state.messages.map((m,i)=>`<div class="message ${m.role}"><div class="message-label"><span>${m.role==='user'?'你的问题':'研念 · 研究伙伴'}</span>${m.role==='assistant'?`<button class="message-action" data-save-message="${i}">保存为笔记</button>`:''}</div><div class="message-body">${m.role==='user'?esc(m.content):markdown(m.content,m.citations||[])}</div>${m.role==='assistant'&&m.citations?.length?`<div class="citations">${m.citations.filter(c=>c.type==='selection').map(c=>`<button class="source-chip" data-selection-source="${c.selection_id}">选区 · 第 ${c.page} 页 ↗</button>`).join('')}${m.citations.filter(c=>c.type==='paragraph').map(c=>`<button class="source-chip" data-action="citation" data-paragraph="${c.paragraph_id}" data-paper="${c.paper_id}">${esc(c.label)} · 第 ${c.page} 页 ↗</button>`).join('')}</div>`:''}</div>`).join('');
-}
-async function sendChat(){
- if(state.chatBusy)return;const field=$('#chat-question');const question=field?.value.trim();if(!question)return;
- if(!state.settings.ready){settingsModal();return;}
- const payload={paper_id:state.paper.id,paragraph_id:state.para?.id||null,conversation_id:state.conversationId,question,selected_text:state.selectedText,
- include_page:$('#include-page').checked,page:state.pdfSelection?.page||state.page,selection_id:state.pdfSelection?.id||null};
- const requestMessages=state.messages;
- requestMessages.push({role:'user',content:question});state.chatBusy=true;renderAssistant();
- try{const result=await api('/chat',{method:'POST',body:payload});
-  if(state.view==='reader'&&state.paper.id===payload.paper_id&&(state.para?.id||null)===payload.paragraph_id&&(state.pdfSelection?.id||null)===payload.selection_id){
-   state.messages.push({role:'assistant',content:result.content,citations:result.citations});state.conversationId=result.conversation_id;
-  }else toast('论文回答已保存，可在该论文的历史对话中查看。');
- }catch(e){requestMessages.pop();toast(e.message,true);setTimeout(()=>{if(state.messages===requestMessages&&$('#chat-question'))$('#chat-question').value=question;},30);}
- finally{state.chatBusy=false;if(state.view==='reader')renderAssistant();}
 }
 function newProjectModal(){
  modal('开始一个研究项目',`<form id="project-form"><label class="field">项目名称<input name="name" required maxlength="120" placeholder="例如：可靠的 LLM Agent"></label><label class="field">研究问题与关键词<textarea name="description" placeholder="这个方向要解决什么问题？填写中英文关键词可以改善相似论文归类。"></textarea></label><div class="modal-footer"><button type="button" class="button" data-close>取消</button><button class="button primary" type="submit">创建项目</button></div></form>`,()=>{
@@ -411,10 +404,6 @@ async function zoteroModal(){
  try{const status=await api('/zotero/status');if(!status.connected){$('#zotero-state').innerHTML=`<div class="notice">${esc(status.message)}</div><button class="button" id="zotero-retry">重新检测</button>`;$('#zotero-retry').onclick=zoteroModal;return;}await load();$('#zotero-more').onclick=e=>busy(e.currentTarget,load);$('#zotero-import').onclick=e=>busy(e.currentTarget,async()=>{const keys=$$('input[name=zotero-key]:checked').map(x=>x.value);if(!keys.length)throw new Error('请先选择论文。');const r=await api('/zotero/import',{method:'POST',body:{keys,project_id:$('#zotero-project').value||null}});await refreshLibrary();if(r.warnings.length){$('#zotero-state').innerHTML=`<div class="notice">已处理 ${r.imported.length} 条。<br>${r.warnings.map(esc).join('<br>')}</div>`;}else{$('#modal').close();await navigate('library');toast('已导入 '+r.imported.length+' 条 Zotero 文献');}});}
  catch(e){if($('#zotero-state'))$('#zotero-state').innerHTML=`<div class="error-box">${esc(e.message)}</div>`;}
 }
-async function historyModal(){
- const items=await api('/papers/'+state.paper.id+'/conversations');modal('这篇论文的对话',items.length?`<div class="zotero-list">${items.map(c=>`<button class="check-row" data-history="${c.id}"><span>${esc(c.title)}<small>${c.selection_id?'PDF 选区对话':c.paragraph_id?'段落对话':'论文对话'} · ${new Date(c.created_at).toLocaleString('zh-CN')}</small></span></button>`).join('')}</div>`:'<p class="subtle">还没有已完成的对话。每次回答成功后，对话会自动保存在本机。</p>');
- $$('[data-history]',$('#modal')).forEach(b=>b.onclick=()=>busy(b,async()=>{if(state.chatBusy)throw new Error('请等待当前回答完成。');const r=await api('/conversations/'+b.dataset.history);state.conversationId=r.conversation.id;state.para=state.paper.paragraphs.find(p=>p.id===r.conversation.paragraph_id)||null;state.pdfSelection=r.conversation.selection_id?await api('/selections/'+r.conversation.selection_id):null;state.page=state.pdfSelection?.page||state.para?.page||1;state.messages=r.messages;state.selectedText=state.pdfSelection?.text||'';state.readerMode='original';$('#modal').close();renderReader();renderAssistant();}));
-}
 document.addEventListener('click',async event=>{
  const el=event.target.closest('button,[data-open-paper],[data-open-idea]');if(!el)return;
  try{
@@ -432,7 +421,7 @@ document.addEventListener('click',async event=>{
   if(el.dataset.ideaPara){const p=state.paper.paragraphs.find(p=>p.id===el.dataset.ideaPara);ideaModal({quote:p.text,paragraphId:p.id,paperId:p.paper_id});return;}
   if(el.dataset.originalPara){const p=state.paper.paragraphs.find(p=>p.id===el.dataset.originalPara);state.page=p.page;state.readerMode='original';renderReader();$(`[data-pdf-para="${p.id}"]`)?.classList.add('active');window.scrollTo(0,0);return;}
   if(el.dataset.pageStep){goToPDFPage(state.page+Number(el.dataset.pageStep));return;}
-  if(el.dataset.prompt){$('#chat-question').value=el.dataset.prompt;$('#chat-question').focus();return;}
+  if(el.dataset.prompt){$('#chat-question').value=el.dataset.prompt;saveChatDraft(el.dataset.prompt);$('#chat-question').focus();return;}
   if(el.dataset.saveMessage){const m=state.messages[Number(el.dataset.saveMessage)];ideaModal({body:m.content,paperId:state.paper.id,paragraphId:state.para?.id||null,quote:state.para?.text||''});return;}
   if(el.dataset.ideaFilter){state.ideaFilter=el.dataset.ideaFilter;renderIdeas();return;}
   if(el.dataset.analyze)return await analyzeIdea(el.dataset.analyze);
@@ -447,7 +436,8 @@ document.addEventListener('click',async event=>{
    case 'edit-idea':ideaModal({idea:state.idea});break;case 'idea-source':if(state.idea.selection_id)await openPDFSelection(state.idea.selection_id);else if(state.idea.paper_id)await openPaper(state.idea.paper_id,state.idea.paragraph_id);break;
    case 'paper-projects':paperProjectsModal();break;case 'paper-idea':ideaModal({paperId:state.paper.id,paragraphId:state.para?.id||null,quote:state.para?.text||''});break;
    case 'similar':await searchPapers(state.paper.title,state.paper.id);break;
-   case 'clear-para':selectParagraph(null);break;case 'new-chat':if(!state.chatBusy){state.messages=[];state.conversationId=null;renderAssistant();}break;
+   case 'clear-para':selectParagraph(null);break;case 'new-chat':newChat();break;
+   case 'chat-context':chatContextModal();break;
    case 'history':await historyModal();break;
    case 'citation':if(state.paper?.id===el.dataset.paper){const p=state.paper.paragraphs.find(p=>p.id===el.dataset.paragraph);if(p){state.page=p.page;state.readerMode='original';renderReader();$('.pdf-canvas-page')?.scrollIntoView({behavior:'smooth',block:'start'});$(`[data-pdf-para="${p.id}"]`)?.classList.add('active');}}else await openPaper(el.dataset.paper,el.dataset.paragraph);break;
   }
@@ -465,6 +455,7 @@ document.addEventListener('mouseup',event=>{
  $('#selection-ask').onclick=()=>{selectParagraph(para.dataset.para,false);state.selectedText=text;renderAssistant();$('#chat-question').focus();menu.hidden=true;selection.removeAllRanges();};
  $('#selection-idea').onclick=()=>{ideaModal({quote:text,paperId:state.paper.id,paragraphId:para.dataset.para});menu.hidden=true;selection.removeAllRanges();};
 });
+setupReaderSplitter();
 $('#sidebar-toggle').onclick=()=>togglePanel('sidebar');
 $('#assistant-toggle').onclick=()=>togglePanel('assistant');
 $('#main-pane').addEventListener?.('scroll',()=>{$('#selection-menu').hidden=true;},{passive:true});
@@ -472,5 +463,5 @@ applyLayout();
 $('#new-project').onclick=newProjectModal;$('#import-button').onclick=()=>importModal();$('#settings-button').onclick=settingsModal;
 $('#quick-idea').onclick=()=>ideaModal();$('#organize').onclick=organizeModal;$('#zotero-button').onclick=zoteroModal;
 $('.brand').onclick=e=>{e.preventDefault();navigate('library');};
-async function boot(){try{[state.library,state.settings]=await Promise.all([api('/library'),api('/settings')]);renderSidebar();const params=new URLSearchParams(location.hash.slice(1));if(params.get('selection')){await openPDFSelection(params.get('selection'));if(params.get('page')&&Number(params.get('page'))!==state.page)goToPDFPage(params.get('page'));}else if(params.get('paper'))await openPaper(params.get('paper'),params.get('paragraph'),params.get('page'));else if(params.get('search'))await resumeSearch(params.get('search'));else render();}catch(e){$('#main-content').innerHTML=`<div class="error-box">无法打开研究空间：${esc(e.message)}<br>请确认启动程序正在运行，然后刷新页面。</div>`;}}
+async function boot(){try{const active=readChatStorage('yannian-chat-active',null);if(active){state.chatBusy=true;pollChat(active);}[state.library,state.settings]=await Promise.all([api('/library'),api('/settings')]);renderSidebar();const params=new URLSearchParams(location.hash.slice(1));if(params.get('selection')){await openPDFSelection(params.get('selection'));if(params.get('page')&&Number(params.get('page'))!==state.page)goToPDFPage(params.get('page'));}else if(params.get('paper'))await openPaper(params.get('paper'),params.get('paragraph'),params.get('page'));else if(params.get('search'))await resumeSearch(params.get('search'));else render();}catch(e){$('#main-content').innerHTML=`<div class="error-box">无法打开研究空间：${esc(e.message)}<br>请确认启动程序正在运行，然后刷新页面。</div>`;}}
 boot();

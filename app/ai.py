@@ -65,15 +65,18 @@ def configure(model, base_url, web_search, api_key=None, clear_key=False, provid
     return settings()
 
 
-async def respond(instructions, messages, web=False, max_tokens=4500):
+async def respond(instructions, messages, web=False, max_tokens=4500, model=None, effort=None, on_event=None):
     config = settings()
     if config["provider"] == "codex":
         return await codex_bridge.respond(SYSTEM + "\n" + instructions, messages,
-            model=config["codex_model"], effort=config["codex_effort"], web=web, max_tokens=max_tokens)
+            model=config["codex_model"] if model is None else model, effort=effort or config["codex_effort"],
+            web=web, max_tokens=max_tokens, **({"on_event": on_event} if on_event else {}))
     if not key():
         raise HTTPException(428, "请先在「模型设置」中填写 OpenAI API Key。阅读、项目和 idea 保存可以直接使用。")
-    payload = {"model": config["model"], "instructions": SYSTEM + "\n" + instructions,
+    payload = {"model": model or config["model"], "instructions": SYSTEM + "\n" + instructions,
                "input": messages, "store": False, "max_output_tokens": max_tokens}
+    if effort:
+        payload["reasoning"] = {"effort": effort}
     if web:
         payload["tools"] = [{"type": "web_search"}]
         payload["tool_choice"] = "required"
@@ -124,7 +127,7 @@ async def respond(instructions, messages, web=False, max_tokens=4500):
         raise HTTPException(502, "模型没有返回可显示的回答，请重试或增加输出长度。")
     if raw.get("status") == "incomplete":
         output += "\n\n> 本次回答达到输出限制，内容可能尚未完成，可以继续追问。"
-    return {"content": output, "citations": citations, "usage": raw.get("usage"), "model": config["model"], "provider": "api"}
+    return {"content": output, "citations": citations, "usage": raw.get("usage"), "model": payload["model"], "provider": "api"}
 
 
 def paper_context(paper_id, paragraph_id, query):

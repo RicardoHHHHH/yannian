@@ -63,6 +63,8 @@ class AppServer:
         self.events = queue.Queue()
         self.serial = 0
         self.deadline = time.monotonic() + timeout
+        self.active_thread = self.active_turn = None
+        self.interrupt_sent = False
 
     def __enter__(self):
         binary = executable()
@@ -89,7 +91,7 @@ class AppServer:
                 cwd=str(db.ROOT), env=environment, bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             threading.Thread(target=self._read, daemon=True).start()
-            self.rpc("initialize", {"clientInfo": {"name": "yannian_workbench", "title": "研念", "version": "0.6.1"},
+            self.rpc("initialize", {"clientInfo": {"name": "yannian_workbench", "title": "研念", "version": "0.7.0"},
                                     "capabilities": {"experimentalApi": True}})
             self.send({"method": "initialized", "params": {}})
             return self
@@ -122,6 +124,19 @@ class AppServer:
     def next_event(self):
         while True:
             if self.cancelled.is_set():
+                if self.active_thread and self.active_turn and not self.interrupt_sent:
+                    self.interrupt_sent = True
+                    self.serial += 1
+                    self.send({"id": self.serial, "method": "turn/interrupt", "params": {
+                        "threadId": self.active_thread, "turnId": self.active_turn}})
+                    self.deadline = min(self.deadline, time.monotonic() + 3)
+                if self.interrupt_sent and time.monotonic() < self.deadline:
+                    try:
+                        event = self.events.get(timeout=.1)
+                    except queue.Empty:
+                        continue
+                    if event and event.get("method") != "turn/completed":
+                        continue
                 raise HTTPException(499, "请求已取消。")
             if time.monotonic() >= self.deadline:
                 raise HTTPException(504, "Codex 请求超时，请缩短问题或稍后重试。")
@@ -184,7 +199,10 @@ def status(refresh=False):
                     result["message"] = "已连接本机 Codex · 使用 ChatGPT 账户额度"
                     try:
                         data = server.rpc("model/list", {"limit": 100}).get("data", [])
-                        result["models"] = [{"id": m["model"], "name": m.get("displayName", m["model"])} for m in data if m.get("model")]
+                        result["models"] = [{"id": m["model"], "name": m.get("displayName", m["model"]),
+                            "efforts": [e["reasoningEffort"] for e in m.get("supportedReasoningEfforts", []) if e.get("reasoningEffort")],
+                            "default_effort": m.get("defaultReasoningEffort"), "is_default": m.get("isDefault", False),
+                            "input_modalities": m.get("inputModalities", ["text", "image"])} for m in data if m.get("model")]
                     except HTTPException:
                         pass  # Authentication remains usable when the catalog is temporarily unavailable.
                 else:
@@ -225,7 +243,7 @@ def clean_reply(text):
     return text.strip(), citations
 
 
-def run(instructions, messages, model="", effort="medium", web=False, max_tokens=4500, cancelled=None):
+def run(instructions, messages, model="", effort="medium", web=False, max_tokens=4500, cancelled=None, on_event=None):
     # Fail fast on overlap, so a double-click cannot silently consume a queue of turns.
     if not _run_lock.acquire(blocking=False):
         raise HTTPException(409, "Codex 正在处理另一条请求，请等它完成后再发送。")
@@ -252,6 +270,9 @@ def run(instructions, messages, model="", effort="medium", web=False, max_tokens
                 params["model"] = model
             thread = server.rpc("thread/start", params)
             thread_id = thread["thread"]["id"]
+            server.active_thread = thread_id
+            if on_event:
+                on_event({"model": thread.get("model") or model or "Codex 默认模型", "phase": "正在思考"})
             # Register the request without discarding notifications that can arrive before its reply.
             server.serial += 1
             server.send({"id": server.serial, "method": "turn/start", "params": {
@@ -261,12 +282,21 @@ def run(instructions, messages, model="", effort="medium", web=False, max_tokens
                 event = server.next_event()
                 if event.get("id") == server.serial and "error" in event:
                     raise HTTPException(*error_message(event["error"]))
+                if event.get("result", {}).get("turn", {}).get("id"):
+                    server.active_turn = event["result"]["turn"]["id"]
                 p, method = event.get("params", {}), event.get("method")
                 if p.get("threadId") not in (None, thread_id):
                     continue
-                if method == "item/agentMessage/delta":
+                if method == "turn/started":
+                    server.active_turn = p.get("turn", {}).get("id")
+                elif method == "item/started" and p.get("item", {}).get("type") == "agentMessage":
+                    items[p["item"]["id"]] = p["item"]
+                elif method == "item/agentMessage/delta":
                     item_id = p.get("itemId", "message")
                     deltas[item_id] = deltas.get(item_id, "") + p.get("delta", "")
+                    if on_event:
+                        visible = "\n\n".join(t for key, t in deltas.items() if items.get(key, {}).get("phase") != "commentary")
+                        on_event({"content": visible, "phase": "正在回答"})
                 elif method == "item/completed":
                     item = p.get("item", {})
                     if item.get("type") == "agentMessage":
@@ -285,8 +315,8 @@ def run(instructions, messages, model="", effort="medium", web=False, max_tokens
                         if item.get("type") == "webSearch":
                             searched = True
                     break
-            finals = [i.get("text", "") for i in items.values() if i.get("phase") == "final_answer"]
-            legacy = [i.get("text", "") for i in items.values() if not i.get("phase")]
+            finals = [i.get("text") or deltas.get(i["id"], "") for i in items.values() if i.get("phase") == "final_answer"]
+            legacy = [i.get("text") or deltas.get(i["id"], "") for i in items.values() if not i.get("phase")]
             output = "\n\n".join(finals or legacy).strip()
             if not output and not items:
                 output = "\n\n".join(deltas.values()).strip()
@@ -303,8 +333,14 @@ def run(instructions, messages, model="", effort="medium", web=False, max_tokens
 
 async def respond(*args, **kwargs):
     cancelled = threading.Event()
+    worker = asyncio.create_task(asyncio.to_thread(run, *args, **kwargs, cancelled=cancelled))
     try:
-        return await asyncio.to_thread(run, *args, **kwargs, cancelled=cancelled)
+        return await asyncio.shield(worker)
     except asyncio.CancelledError:
         cancelled.set()
+        # Wait for interrupt/transport cleanup before allowing another turn to acquire the lock.
+        try:
+            await asyncio.shield(worker)
+        except (Exception, asyncio.CancelledError):
+            pass
         raise

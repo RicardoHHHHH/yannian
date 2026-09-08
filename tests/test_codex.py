@@ -173,3 +173,21 @@ def test_arbitrary_image_urls_are_not_forwarded():
     with pytest.raises(HTTPException) as e:
         bridge.turn_input([{"content": [{"type": "input_image", "image_url": "file:///private/key"}]}])
     assert e.value.status_code == 400
+
+
+def test_stream_only_emits_public_answers_and_keeps_deltas_without_completed_item(monkeypatch):
+    monkeypatch.setattr(bridge, "AppServer", FakeServer)
+    monkeypatch.setattr(FakeServer, "stream", [
+        {"method": "item/reasoning/textDelta", "params": {"delta": "private reasoning fixture"}},
+        {"method": "item/started", "params": {"item": {"id": "c", "type": "agentMessage", "phase": "commentary"}}},
+        {"method": "item/agentMessage/delta", "params": {"itemId": "c", "delta": "Progress commentary"}},
+        {"method": "item/started", "params": {"item": {"id": "a", "type": "agentMessage", "phase": "final_answer"}}},
+        {"method": "item/agentMessage/delta", "params": {"itemId": "a", "delta": "Public answer"}},
+        {"method": "turn/completed", "params": {"turn": {"status": "completed", "items": []}}},
+    ])
+    events = []
+    result = bridge.run("Test", [], on_event=events.append)
+    assert result["content"] == "Public answer"
+    assert events[-1]["content"] == "Public answer"
+    assert "private reasoning fixture" not in json.dumps(events)
+    assert "Progress commentary" not in json.dumps(events)

@@ -18,6 +18,7 @@ const context = vm.createContext({
  fetch:()=>new Promise(()=>{}), setTimeout,clearTimeout,
  window:{scrollTo(){}}, localStorage:{getItem(k){return storedValues.get(k)||null;},setItem(k,v){storedValues.set(k,v);},removeItem(k){storedValues.delete(k);}}
 });
+vm.runInContext(fs.readFileSync(path.join(root,'static','assistant.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(root,'static','app.js'),'utf8'),context);
 const run = code => vm.runInContext(code,context);
 let passed=0;
@@ -126,7 +127,8 @@ async function checkPDFSelectionFlow(){
  run(`window.innerWidth=1400;window.innerHeight=900;window.getSelection=()=>({removeAllRanges(){}});window.pdfMountCount=0;window.YannianPDF={mount(args){window.lastPDFMount=args;window.pdfMountCount++},clear(){},goToPage(page,rects){window.lastPDFJump={page,rects};return true;}};markdown=x=>esc(x);
  const fixturePaper={id:'selected-paper',title:'PDF fixture',source:'arXiv',has_pdf:true,page_count:2,paragraphs:[{id:'selected-para',paper_id:'selected-paper',page:2,ordinal:1,text:'A selected caption',bbox:'[60,80,300,300]',display_bbox:[.1,.1,.5,.375]}],page_sizes:[[600,800],[600,800]],project_ids:[]};
  const fixtureSelection={id:'selection-a',paper_id:'selected-paper',paragraph_id:'selected-para',page:2,kind:'region',text:'A selected caption',rects:[[.1,.1,.5,.375]],image_url:'/api/selections/selection-a/image.png'};
- api=async(path,options={})=>{if(path==='/papers/selected-paper')return fixturePaper;if(path.endsWith('/selections'))return fixtureSelection;if(path==='/chat'){window.sentPDFQuestion=options.body;return {content:'Figure explanation',conversation_id:'conv-a',citations:[{type:'selection',selection_id:'selection-a',page:2}]};}throw new Error(path)};
+ const fixtureRun={id:'run-a',message_id:'message-a',paper_id:'selected-paper',status:'completed',content:'Figure explanation',conversation_id:'conv-a',citations:[{type:'selection',selection_id:'selection-a',page:2}]};
+ api=async(path,options={})=>{if(path==='/papers/selected-paper')return fixturePaper;if(path.endsWith('/selections'))return fixtureSelection;if(path==='/chat/runs'){window.sentPDFQuestion=options.body;return fixtureRun;}if(path==='/chat/runs/run-a')return fixtureRun;if(path==='/conversations/conv-a')return {conversation:{id:'conv-a',paper_id:'selected-paper'},messages:[{role:'assistant',...fixtureRun}]};throw new Error(path)};
  state.settings.ready=true;state.chatBusy=false;state.readerMode='paragraphs';`);
  await run(`openPaper('selected-paper')`);
  assert.equal(run('state.readerMode'),'original');
@@ -206,4 +208,67 @@ async function checkWorkspaceControls(){
  assert.ok(node('#url-import-slot').innerHTML.includes('Download unavailable'));
  passed++;console.log('PASS failed URL imports retain the URL and allow retry');
 }
-checkPDFSelectionFlow().then(checkWorkspaceControls).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});
+async function checkChatControls(){
+ run(`state.view='reader';state.chatBusy=false;state.chatRun=null;state.messages=[];state.conversationId='conv-a';state.chatRenderedKey=null;
+ state.settings={ready:true,provider:'codex',codex_model:'model-a',codex_effort:'medium',codex:{models:[{id:'model-a',name:'Model A',efforts:['low','high'],default_effort:'low',is_default:true},{id:'model-b',name:'Model B',efforts:['medium','xhigh'],default_effort:'medium'}]}};
+ state.layout={sidebarCollapsed:false,assistantCollapsed:false,assistantRatio:.34};
+ window.pdfMountCount=0;saveChatDraft('Keep my next question');renderAssistant();`);
+ const source=node('#assistant-panel').innerHTML;
+ assert.ok(source.includes('chat-model')&&source.includes('chat-effort'));
+ assert.ok(source.includes('Keep my next question'));
+ assert.equal(run('chatChoices().effort'),'low','Unsupported effort must fall back to the selected model default.');
+ node('#chat-model').value='model-b';node('#chat-effort').value='high';
+ node('#chat-model').onchange();
+ assert.equal(run('chatChoices().model'),'model-b');
+ assert.equal(run('chatChoices().effort'),'medium');
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Keep my next question');
+ passed++;console.log('PASS in-panel model choices respect supported efforts and preserve next-question drafts');
+
+ node('#workspace').rect={left:200,width:1000,top:0};
+ node('#workspace').style.setProperty=function(k,v){this[k]=v;};
+ const beforePage=run('state.page');node('#chat-question').value='Unchanged while dragging';
+ node('#reader-splitter').onpointerdown({button:0,pointerId:7,preventDefault(){}});
+ node('#reader-splitter').onpointermove({pointerId:7,clientX:750});
+ node('#reader-splitter').onpointerup({pointerId:7});
+ assert.equal(run('readLayoutPreferences().assistantRatio'),.45);
+ assert.equal(node('#workspace').style['--assistant-width'],'45%');
+ assert.equal(node('#chat-question').value,'Unchanged while dragging');
+ assert.equal(run('state.page'),beforePage);assert.equal(run('window.pdfMountCount'),0);
+ node('#reader-splitter').onkeydown({key:'ArrowLeft',preventDefault(){}});
+ assert.equal(Math.round(run('state.layout.assistantRatio')*100),47);
+ node('#reader-splitter').ondblclick();assert.equal(run('state.layout.assistantRatio'),.34);
+ assert.equal(run('clampAssistantRatio(Infinity)'),.34);
+ assert.equal(run('clampAssistantRatio(999)'),.7);
+ passed++;console.log('PASS pointer and keyboard resizing persists width without remounting PDF or discarding draft');
+
+ node('#messages').scrollHeight=2500;node('#messages').clientHeight=500;node('#messages').scrollTop=180;
+ run(`state.messages=[{id:'answer-a',role:'assistant',content:'Streaming answer',status:'running'}];renderChatMessages()`);
+ assert.equal(node('#messages').scrollTop,180);assert.equal(node('#chat-to-bottom').hidden,false);
+ node('#messages').scrollTop=1990;run('renderChatMessages()');
+ assert.equal(node('#messages').scrollTop,2500);
+ passed++;console.log('PASS live answers preserve history scroll and follow new output only near the bottom');
+
+ run(`state.conversationId='conv-a';state.messages=[{id:'answer-a',role:'assistant',content:'Partial answer',status:'running'}];
+ state.chatRun={id:'active-a',message_id:'answer-a',paper_id:state.paper.id,conversation_id:'conv-a',status:'running',content:'Partial answer',citations:[]};
+ trackedChatId='active-a';state.chatBusy=true;saveChatDraft('Next question');
+ api=async(path,options={})=>{window.cancelRequest={path,method:options.method};return {...state.chatRun,status:'stopped'};};`);
+ await run('stopChat()');
+ assert.equal(run('window.cancelRequest.path'),'/chat/runs/active-a/cancel');
+ assert.equal(run('window.cancelRequest.method'),'POST');assert.equal(run('state.chatBusy'),false);
+ assert.equal(run('state.messages[0].content'),'Partial answer');
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Next question');
+ assert.ok(node('#assistant-panel').innerHTML.includes('已停止'));
+ passed++;console.log('PASS stop calls backend cancellation and keeps the partial answer and next draft');
+
+ run(`state.chatBusy=false;state.pdfSelection=null;state.conversationId='conv-a';selectParagraph('selected-para',false)`);
+ assert.equal(run('state.conversationId'),'conv-a');assert.equal(run('state.messages.length'),1);
+ passed++;console.log('PASS changing paragraph context continues the current conversation');
+
+ run(`api=(path)=>path.endsWith('old-run')?new Promise(resolve=>window.finishOldPoll=resolve):Promise.resolve({id:'new-run',message_id:'new-answer',status:'completed',content:'New answer',paper_id:state.paper.id,conversation_id:'conv-a',citations:[]});window.oldPoll=pollChat('old-run');`);
+ await run(`pollChat('new-run')`);
+ run(`window.finishOldPoll({id:'old-run',status:'running',content:'Stale answer',paper_id:state.paper.id,conversation_id:'conv-a'})`);
+ await run('window.oldPoll');
+ assert.equal(run('state.chatRun.id'),'new-run');assert.equal(run('state.chatBusy'),false);
+ passed++;console.log('PASS late polling results cannot overwrite a newer conversation turn');
+}
+checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});

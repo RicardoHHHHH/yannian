@@ -22,20 +22,22 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import db, pdf, research, pdf_sources, selections
 load_dotenv(db.ROOT / ".env")
-from . import ai, discovery
+from . import ai, discovery, chat as reading_chat
 
 
 @asynccontextmanager
 async def lifespan(app):
     db.init()
     discovery.init()
+    reading_chat.init()
     try:
         yield
     finally:
+        await reading_chat.shutdown()
         await discovery.shutdown()
 
 
-app = FastAPI(title="研念 · Yannian Workbench", version="0.6.1", lifespan=lifespan)
+app = FastAPI(title="研念 · Yannian Workbench", version="0.7.0", lifespan=lifespan)
 PDF_FETCHING = set()
 URL_FETCHING = set()
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
@@ -176,6 +178,11 @@ class ChatBody(BaseModel):
     selection_id: str | None = None
 
 
+class ChatRunBody(ChatBody):
+    model: str | None = Field(default=None, max_length=120)
+    effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None = None
+
+
 class SelectionBody(BaseModel):
     page: int = Field(ge=1, le=500)
     kind: Literal['text', 'region']
@@ -211,7 +218,7 @@ class AnalyzeBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.6.1", "app": "yannian-workbench"}
+    return {"ok": True, "version": "0.7.0", "app": "yannian-workbench"}
 
 
 @app.get("/api/settings")
@@ -511,11 +518,22 @@ def conversations(paper_id: str):
 
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str):
-    conversation = require("conversations", conversation_id)
-    messages = db.rows("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at,rowid", (conversation_id,))
-    for m in messages:
-        m["citations"] = json.loads(m["citations"])
-    return {"conversation": conversation, "messages": messages}
+    return reading_chat.conversation(conversation_id)
+
+
+@app.post("/api/chat/runs", status_code=202)
+async def start_chat_run(body: ChatRunBody):
+    return await reading_chat.start(body)
+
+
+@app.get("/api/chat/runs/{run_id}")
+def get_chat_run(run_id: str):
+    return reading_chat.get(run_id)
+
+
+@app.post("/api/chat/runs/{run_id}/cancel")
+async def cancel_chat_run(run_id: str):
+    return await reading_chat.cancel(run_id)
 
 
 @app.post("/api/chat")
@@ -814,7 +832,7 @@ async def import_zotero(body: ZoteroImportBody):
 def export_backup():
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        payload = {t: db.rows("SELECT * FROM " + t) for t in ("projects", "papers", "project_papers", "paragraphs", "ideas", "conversations", "messages", "analyses")}
+        payload = {t: db.rows("SELECT * FROM " + t) for t in ("projects", "papers", "project_papers", "paragraphs", "ideas", "conversations", "messages", "analyses", "chat_runs")}
         archive.writestr("library.json", json.dumps(payload, ensure_ascii=False, indent=2))
         # A consistent SQLite snapshot allows an exact restore, even while the app is open.
         snapshot = db.DATA / ("backup-" + db.uid() + ".sqlite3")

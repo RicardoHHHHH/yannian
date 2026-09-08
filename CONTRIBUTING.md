@@ -16,6 +16,7 @@
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -q
 node --check static/app.js
+node --check static/assistant.js
 node tests/test_frontend.cjs
 node tests/test_pdf_geometry.mjs
 node tests/test_pdf_layout.mjs
