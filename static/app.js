@@ -26,7 +26,7 @@ const icons = {
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.file}</svg>`;
 const statuses = {spark:'灵感',exploring:'探索中',testing:'验证中',parked:'暂存'};
 const state = {view:'library', projectId:null, library:{papers:[],projects:[],idea_count:0}, settings:{}, paper:null,
- para:null, selectedText:'', readerMode:'original', pdfZoom:'fit', pdfTool:'text', pdfSelection:null, page:1, messages:[], conversationId:null, chatBusy:false, chatRun:null, chatRenderedKey:null, chatContextOpen:false,
+ para:null, selectedText:'', readerMode:'original', pdfZoom:'fit', pdfTool:'text', pdfSelection:null, page:1, messages:[], conversationId:null, chatBusy:false, chatRun:null, chatRenderedKey:null,
  ideas:[], idea:null, analyses:[], filter:'', ideaFilter:'all', discover:null, query:'', venue:'all', searchBusy:false,
  analysisBusy:false, searchGeneration:0, searchJob:null, searchDepth:'deep', searchWeb:true, searchLanguage:'english', searchOrder:'relevance', searchPage:1, searchAudit:false, pdfFetching:null,
  layout:readLayoutPreferences(),urlImport:{url:'',projectId:'',busy:false,result:null,error:''}};
@@ -205,7 +205,7 @@ function showPDFSelectionMenu(candidate,position){
    const selected=await api('/papers/'+paperId+'/selections',{method:'POST',body:candidate});
    if(state.paper.id!==paperId)return;
    state.pdfSelection=selected;state.para=state.paper.paragraphs.find(p=>p.id===selected.paragraph_id)||null;
-   state.selectedText=selected.text;state.page=selected.page;state.chatContextOpen=true;
+   state.selectedText=selected.text;state.page=selected.page;
    window.getSelection()?.removeAllRanges();updatePDFPage(selected.page);renderAssistant();mountPDF();
    if(forIdea)ideaModal({quote:selected.text||'PDF 第 '+selected.page+' 页的框选区域',paperId,paragraphId:selected.paragraph_id,selectionId:selected.id});
    else{togglePanel('assistant',false);$('#chat-question').value=candidate.kind==='region'?'请分析这个选区，解释图表、公式或流程表达的含义，以及它如何支持论文的结论。':'';saveChatDraft($('#chat-question').value);$('#chat-question').focus();$('#assistant-panel').scrollIntoView?.({block:'nearest',behavior:'smooth'});toast('选区已附到右侧对话，输入问题后发送。');}
@@ -224,7 +224,7 @@ async function openPDFSelection(id){
 }
 function selectParagraph(id,focus=true){
  if(state.chatBusy){toast('当前回答正在生成，请稍后切换对话。');return;}
- state.pdfSelection=null;state.para=state.paper.paragraphs.find(p=>p.id===id)||null;state.selectedText='';$('#selection-menu').hidden=true;state.page=state.para?.page||state.page;state.chatContextOpen=Boolean(id);
+ state.pdfSelection=null;state.para=state.paper.paragraphs.find(p=>p.id===id)||null;state.selectedText='';$('#selection-menu').hidden=true;state.page=state.para?.page||state.page;
  $$('.paragraph.selected').forEach(e=>e.classList.remove('selected'));$('#para-'+id)?.classList.add('selected');
  if(state.readerMode==='original')renderReader();renderAssistant();if(focus){togglePanel('assistant',false);$('#chat-question')?.focus();}
 }
@@ -413,7 +413,7 @@ document.addEventListener('click',async event=>{
   if(el.dataset.openPaper)return await openPaper(el.dataset.openPaper);
   if(el.dataset.openIdea)return await openIdea(el.dataset.openIdea);
   if(el.dataset.pdfTool){state.pdfTool=el.dataset.pdfTool;$('#selection-menu').hidden=true;window.getSelection()?.removeAllRanges();$$('[data-pdf-tool]').forEach(b=>b.classList.toggle('active',b.dataset.pdfTool===state.pdfTool));mountPDF();return;}
-  if(el.dataset.selectionSource)return await openPDFSelection(el.dataset.selectionSource);
+  if(el.dataset.selectionSource){if($('#modal').open)$('#modal').close();return await openPDFSelection(el.dataset.selectionSource);}
   if(el.dataset.selectionIdea){const selected=state.pdfSelection;if(selected)ideaModal({quote:selected.text||'PDF 第 '+selected.page+' 页的框选区域',paperId:selected.paper_id,paragraphId:selected.paragraph_id,selectionId:selected.id});return;}
   if(el.dataset.readerMode){state.readerMode=el.dataset.readerMode;$('#selection-menu').hidden=true;renderReader();return;}
   if(el.dataset.askPara){selectParagraph(el.dataset.askPara);return;}

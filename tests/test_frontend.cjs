@@ -278,7 +278,55 @@ async function checkChatControls(){
  assert.ok(contextMarkup.includes('<details class="selection-extracted">')&&!contextMarkup.includes('selection-extracted" open'));
  const userMarkup=run(`userMessageMarkup({content:'Explain\\nMESSY FIGURE LABELS',display_content:'Explain this figure',attachments:[{selection_id:'figure-selection',kind:'region',page:2,text:'MESSY FIGURE LABELS'}]})`);
  assert.ok(userMarkup.includes('Explain this figure')&&userMarkup.includes('<img'));
+ assert.ok(userMarkup.includes('selection-thumbnail'));
+ assert.ok(userMarkup.indexOf('<img')<userMarkup.indexOf('class="message-body"'),'The thumbnail belongs above the question bubble.');
  assert.ok(!userMarkup.includes('MESSY FIGURE LABELS'));
  passed++;console.log('PASS figure attachments show the original crop and hide extracted layout text by default');
 }
-checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});
+async function checkAttachmentLifecycle(){
+ run(`state.view='reader';state.messages=[];state.conversationId=null;state.chatBusy=false;state.chatRun=null;
+ state.pdfSelection={...fixtureSelection,id:'image-first',text:'AUXILIARY FIGURE TEXT'};state.selectedText=state.pdfSelection.text;renderAssistant();`);
+ let html=node('#assistant-panel').innerHTML;
+ assert.ok(!html.slice(0,html.indexOf('id="messages"')).includes('<img'),'No image may be pinned above the scrolling conversation.');
+ assert.ok(html.includes('class="pending-attachment"'));
+ assert.ok(!html.includes('AUXILIARY FIGURE TEXT'));
+ node('#chat-question').value='Explain the attached figure';node('#include-page').checked=false;
+ run(`api=async()=>{throw new Error('Temporary submission failure')}`);
+ await run('sendChat()');
+ assert.ok(run('pendingAttachmentMarkup()').includes('image-first'));
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Explain the attached figure');
+ assert.equal(run('state.messages.length'),0);
+ passed++;console.log('PASS image preview stays beside the draft, never above messages, and survives failed submission');
+
+ run(`window.attachmentTurn=0;window.attachmentPayloads=[];
+ api=async(path,options={})=>{if(path==='/chat/runs'){window.attachmentPayloads.push(options.body);window.attachmentTurn++;return {id:'attachment-run-'+window.attachmentTurn,message_id:'attachment-answer-'+window.attachmentTurn,paper_id:state.paper.id,conversation_id:'attachment-chat',status:'completed',content:'Answer',citations:[]};}if(path.startsWith('/chat/runs/'))return state.chatRun;throw new Error(path);};`);
+ await run('sendChat()');
+ assert.equal(run('pendingAttachmentMarkup()'),'');
+ assert.ok(!node('#assistant-panel').innerHTML.includes('class="pending-attachment"'));
+ assert.equal(run('state.pdfSelection.id'),'image-first','Sending must keep the image context for follow-up questions.');
+ assert.equal(run('window.attachmentPayloads[0].selection_id'),'image-first');
+ node('#chat-question').value='How does that explain the result?';
+ await run('sendChat()');
+ assert.equal(run('window.attachmentPayloads[1].selection_id'),'image-first');
+ assert.equal((run('messageMarkup()').match(/<img /g)||[]).length,1,'Consecutive questions about the same image share one thumbnail.');
+ assert.equal(run(`state.messages.filter(m=>m.role==='user').every(m=>m.attachments[0].id==='image-first')`),true,'Presentation must not discard historical attachments.');
+ run(`window.restoredMessages=JSON.parse(JSON.stringify(state.messages));for(const m of window.restoredMessages)for(const s of m.attachments||[])delete s.id;
+ api=async()=>({conversation:{id:'attachment-chat',paper_id:state.paper.id},messages:window.restoredMessages});`);
+ await run(`loadChat('attachment-chat')`);
+ assert.equal(run('pendingAttachmentMarkup()'),'');
+ assert.equal((run('messageMarkup()').match(/<img /g)||[]).length,1);
+ passed++;console.log('PASS accepted images move into messages; follow-ups and restored history keep context without duplicate previews');
+
+ run(`state.pdfSelection={...state.pdfSelection,id:'image-second',page:1};renderAssistant()`);
+ assert.ok(run('pendingAttachmentMarkup()').includes('image-second'));
+ run(`state.messages.push({role:'user',content:'Compare this image',attachments:[{...state.pdfSelection,selection_id:state.pdfSelection.id}]});renderAssistant()`);
+ assert.equal(run('pendingAttachmentMarkup()'),'');
+ assert.equal((run('messageMarkup()').match(/<img /g)||[]).length,2);
+ run(`newChat();saveChatDraft('Keep this draft')`);
+ assert.ok(run('pendingAttachmentMarkup()').includes('image-second'));
+ run(`selectParagraph(null,false)`);
+ assert.equal(run('pendingAttachmentMarkup()'),'');
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Keep this draft');
+ passed++;console.log('PASS a different selection and new chat get an attachment; removing it preserves the question draft');
+}
+checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(checkAttachmentLifecycle).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});
