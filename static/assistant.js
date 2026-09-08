@@ -28,6 +28,20 @@ function chatControls(){
  const modelInput=provider==='codex'?`<select id="chat-model" aria-label="对话模型"><option value="">Codex 默认模型</option>${models.map(m=>`<option value="${esc(m.id)}" ${model===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}${model&&!models.some(m=>m.id===model)?`<option selected value="${esc(model)}">${esc(model)}</option>`:''}</select>`:`<input id="chat-model" aria-label="对话模型" value="${esc(model)}" maxlength="120" placeholder="API 模型名称">`;
  return `<div class="chat-controls"><label>模型${modelInput}</label><label>思考深度<select id="chat-effort" aria-label="思考深度">${provider==='api'?'<option value="">模型默认</option>':''}${efforts.map(e=>`<option value="${esc(e)}" ${effort===e?'selected':''}>${esc(effortNames[e]||e)}</option>`).join('')}</select></label><button class="icon-button" id="refresh-chat-models" title="刷新可用模型" aria-label="刷新可用模型">↻</button></div>`;
 }
+function selectionAttachment(selection,{extracted=false}={}){
+ const id=selection.selection_id||selection.id;
+ if(selection.kind!=='region')return `<blockquote class="selected-quote">${esc(selection.text||'')}</blockquote>`;
+ const imageURL='/api/selections/'+encodeURIComponent(id)+'/image.png';
+ return `<figure class="selection-attachment"><button data-selection-source="${esc(id)}" title="回到 PDF 查看原图"><img class="selection-preview" src="${imageURL}" alt="第 ${selection.page} 页的图片选区" loading="lazy"></button><figcaption>图片选区 · 第 ${selection.page} 页 · 点击回到原图</figcaption></figure>${extracted&&selection.text?`<details class="selection-extracted"><summary>辅助文字（图中文字可能乱序）</summary><pre>${esc(selection.text)}</pre></details>`:''}`;
+}
+function userMessageMarkup(message){
+ return esc(message.display_content??message.content)+(message.attachments||[]).map(s=>selectionAttachment(s)).join('');
+}
+function focusedSelectionMarkup(){
+ const selection=state.pdfSelection;
+ if(selection?.kind==='region')return selectionAttachment(selection,{extracted:true});
+ return `<blockquote class="context-quote selection-context-text">${esc(state.selectedText||state.para?.text||state.paper?.title||'')}</blockquote>`;
+}
 function renderAssistant({bottom=false}={}){
  const focused=document.activeElement?.id==='chat-question',caret=$('#chat-question')?.selectionStart;
  const old=$('#messages'),same=state.chatRenderedKey===chatKey();
@@ -36,7 +50,7 @@ function renderAssistant({bottom=false}={}){
  const pageChecked=same?$('#include-page')?.checked:!state.pdfSelection&&!state.paper?.paragraphs.length&&state.paper?.has_pdf;
  const p=state.para,selection=state.pdfSelection,run=state.chatRun;
  $('#assistant-panel').innerHTML=`<div class="assistant-header"><div class="assistant-title"><span>✧</span> 一起读论文</div><div class="assistant-head-actions"><button class="icon-button" title="查看上下文" aria-label="查看上下文" data-action="chat-context">${icon('book')}</button><button class="icon-button" title="历史对话" aria-label="历史对话" data-action="history">${icon('history')}</button><button class="icon-button" title="新对话" aria-label="新对话" data-action="new-chat">＋</button></div></div>
- <details class="assistant-context" ${state.chatContextOpen?'open':''}><summary>${selection?(selection.kind==='region'?'框选区域':'选中文字')+' · 第 '+selection.page+' 页':p?'当前段落 · 第 '+p.page+' 页':'当前论文'}<span> · ${state.messages.filter(m=>m.role==='user').length} 轮对话</span></summary><div class="context-detail">${p||selection?'<button class="context-clear" data-action="clear-para">清除当前选区</button>':''}${selection?.kind==='region'?`<img class="selection-preview" src="${esc(selection.image_url)}" alt="将发送给模型的 PDF 选区截图">`:''}<blockquote class="context-quote selection-context-text">${esc(state.selectedText||p?.text||(selection?'已选择图片区域':state.paper?.title)||'')}</blockquote>${selection?`<div class="selection-actions"><button data-selection-source="${selection.id}">回到原选区</button><button data-selection-idea="${selection.id}">记为 idea</button></div>`:''}</div></details>
+ <details class="assistant-context" ${state.chatContextOpen?'open':''}><summary>${selection?(selection.kind==='region'?'框选区域':'选中文字')+' · 第 '+selection.page+' 页':p?'当前段落 · 第 '+p.page+' 页':'当前论文'}<span> · ${state.messages.filter(m=>m.role==='user').length} 轮对话</span></summary><div class="context-detail">${p||selection?'<button class="context-clear" data-action="clear-para">清除当前选区</button>':''}${focusedSelectionMarkup()}${selection?`<div class="selection-actions"><button data-selection-source="${selection.id}">回到原选区</button><button data-selection-idea="${selection.id}">记为 idea</button></div>`:''}</div></details>
  <div class="assistant-messages" id="messages" aria-label="对话记录" tabindex="0">${messageMarkup()}</div>
  <button class="chat-to-bottom" id="chat-to-bottom" ${follow?'hidden':''}>回到最新消息 ↓</button>
  <div class="chat-progress" id="chat-progress" role="status">${state.chatBusy?`${run?.phase||'正在提交问题'} · ${esc(run?.model||chatChoices().model||'Codex 默认模型')}`:''}</div>
@@ -55,7 +69,7 @@ function renderAssistant({bottom=false}={}){
 }
 function messageMarkup(){
  if(!state.messages.length)return `<div class="assistant-welcome"><div class="spark">✧</div><h3>带着一个问题开始阅读。</h3><p>选中文字、图片或公式，与我逐步讨论。<br>换选区可以接着聊，历史记录自动保存。</p><div class="prompt-suggestions">${['用直观的例子解释这里的核心思想','这一方法依赖哪些关键假设？','实验真的支持作者的结论吗？','这里有哪些值得验证的改进方向？'].map(t=>`<button data-prompt="${esc(t)}">${esc(t)} ↗</button>`).join('')}</div></div>`;
- return state.messages.map((m,i)=>`<div class="message ${m.role}" id="chat-message-${i}"><div class="message-label"><span>${m.role==='user'?'你的问题':'研念 · 研究伙伴'}</span>${m.role==='assistant'&&m.content?`<button class="message-action" data-save-message="${i}">保存为笔记</button>`:''}</div><div class="message-body">${m.role==='user'?esc(m.content):m.content?markdown(m.content,m.citations||[]):'<span class="spinner"></span> 正在思考…'}</div>${m.role==='assistant'?`<div class="message-meta">${esc([m.model,effortNames[m.effort],({stopped:'已停止 · 内容未完成',failed:'生成失败',interrupted:'回答中断',running:'生成中',stopping:'正在停止'})[m.status]].filter(Boolean).join(' · '))}</div>${m.error?`<p class="chat-error">${esc(m.error)}</p>`:''}`:''}${m.citations?.length?`<div class="citations">${m.citations.filter(c=>c.type==='selection').map(c=>`<button class="source-chip" data-selection-source="${c.selection_id}">选区 · 第 ${c.page} 页 ↗</button>`).join('')}${m.citations.filter(c=>c.type==='paragraph').map(c=>`<button class="source-chip" data-action="citation" data-paragraph="${c.paragraph_id}" data-paper="${c.paper_id}">${esc(c.label)} · 第 ${c.page} 页 ↗</button>`).join('')}</div>`:''}</div>`).join('');
+ return state.messages.map((m,i)=>`<div class="message ${m.role}" id="chat-message-${i}"><div class="message-label"><span>${m.role==='user'?'你的问题':'研念 · 研究伙伴'}</span>${m.role==='assistant'&&m.content?`<button class="message-action" data-save-message="${i}">保存为笔记</button>`:''}</div><div class="message-body">${m.role==='user'?userMessageMarkup(m):m.content?markdown(m.content,m.citations||[]):'<span class="spinner"></span> 正在思考…'}</div>${m.role==='assistant'?`<div class="message-meta">${esc([m.model,effortNames[m.effort],({stopped:'已停止 · 内容未完成',failed:'生成失败',interrupted:'回答中断',running:'生成中',stopping:'正在停止'})[m.status]].filter(Boolean).join(' · '))}</div>${m.error?`<p class="chat-error">${esc(m.error)}</p>`:''}`:''}${m.citations?.length?`<div class="citations">${m.citations.filter(c=>c.type==='selection').map(c=>`<button class="source-chip" data-selection-source="${c.selection_id}">选区 · 第 ${c.page} 页 ↗</button>`).join('')}${m.citations.filter(c=>c.type==='paragraph').map(c=>`<button class="source-chip" data-action="citation" data-paragraph="${c.paragraph_id}" data-paper="${c.paper_id}">${esc(c.label)} · 第 ${c.page} 页 ↗</button>`).join('')}</div>`:''}</div>`).join('');
 }
 function renderChatMessages(){
  if(state.view!=='reader'||state.chatRenderedKey!==chatKey())return;
@@ -86,13 +100,14 @@ async function sendChat(){
  if(!state.settings.ready){settingsModal();return;}
  const choices=chatChoices(),payload={paper_id:state.paper.id,paragraph_id:state.para?.id||null,conversation_id:state.conversationId,question,selected_text:state.selectedText,
   include_page:$('#include-page').checked,page:state.pdfSelection?.page||state.page,selection_id:state.pdfSelection?.id||null,model:choices.model,effort:choices.effort||null};
+ const pendingMessage={role:'user',content:question,attachments:state.pdfSelection?[{...state.pdfSelection,selection_id:state.pdfSelection.id}]:[]};
  saveChatDraft(question);state.chatBusy=true;state.chatRun=null;trackedChatId=null;clearTimeout(chatTimer);renderAssistant();
  let accepted=null;
  try{
   const run=await api('/chat/runs',{method:'POST',body:payload});
   accepted=run;trackedChatId=run.id;writeChatStorage('yannian-chat-active',run.id);
   const remembered=readChatStorage('yannian-last-chat');remembered[payload.paper_id]=run.conversation_id;writeChatStorage('yannian-last-chat',remembered);
-  if(state.paper?.id===payload.paper_id){saveChatDraft('');state.conversationId=run.conversation_id;state.messages.push({role:'user',content:question});}
+  if(state.paper?.id===payload.paper_id){saveChatDraft('');state.conversationId=run.conversation_id;state.messages.push(pendingMessage);}
   acceptChatRun(run);if(state.view==='reader')renderAssistant({bottom:true});await pollChat(run.id);
  }catch(e){if(accepted){pollChat(accepted.id);}else{state.chatBusy=false;if(state.view==='reader')renderAssistant();}toast(e.message,true);}
 }
@@ -132,6 +147,6 @@ async function historyModal(){
 }
 function chatContextModal(){
  const last=[...state.messages].reverse().find(m=>m.context_info),info=last?.context_info;
- modal('对话与本轮上下文',`<p class="subtle">${info?`最近一轮带入 ${info.included_messages} / ${info.total_messages} 条历史消息${info.omitted_messages?'，较早的 '+info.omitted_messages+' 条因长度限制未附入':''}。`:'发送时会带入本次选区、检索到的原文和历史对话。'}历史记录在本机完整保留。图片需要重新框选才能再次分析像素。</p><h3>当前关注</h3><p>${esc(state.selectedText||state.para?.text||state.paper.title)}</p>${info?.sources?.length?`<h3>最近一轮参考原文</h3><div class="context-sources">${info.sources.map(c=>`<p>${esc(c.label)} · ${esc(c.title)}</p>`).join('')}</div>`:''}<h3>对话目录</h3><div class="zotero-list">${state.messages.map((m,i)=>`<button class="check-row" data-chat-jump="${i}"><span>${m.role==='user'?'你':'AI'} · ${esc(m.content.slice(0,140)||'正在生成…')}</span></button>`).join('')||'<p class="subtle">还没有消息。</p>'}</div>`);
+ modal('对话与本轮上下文',`<p class="subtle">${info?`最近一轮带入 ${info.included_messages} / ${info.total_messages} 条历史消息${info.omitted_messages?'，较早的 '+info.omitted_messages+' 条因长度限制未附入':''}。`:'发送时会带入本次选区、检索到的原文和历史对话。'}历史记录在本机完整保留。图片需要重新框选才能再次分析像素。</p><h3>当前关注</h3>${focusedSelectionMarkup()}${info?.sources?.length?`<h3>最近一轮参考原文</h3><div class="context-sources">${info.sources.map(c=>`<p>${esc(c.label)} · ${esc(c.title)}</p>`).join('')}</div>`:''}<h3>对话目录</h3><div class="zotero-list">${state.messages.map((m,i)=>`<button class="check-row" data-chat-jump="${i}"><span>${m.role==='user'?'你':'AI'} · ${esc((m.display_content??m.content).slice(0,140)||'正在生成…')}</span></button>`).join('')||'<p class="subtle">还没有消息。</p>'}</div>`);
  $$('[data-chat-jump]',$('#modal')).forEach(b=>b.onclick=()=>{$('#modal').close();$('#chat-message-'+b.dataset.chatJump)?.scrollIntoView({block:'start',behavior:'smooth'});});
 }

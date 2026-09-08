@@ -99,7 +99,7 @@ function markdown(text,citations=[]) {
  $$('a',holder).forEach(a=>{a.href=safeUrl(a.getAttribute('href'));a.target='_blank';a.rel='noopener noreferrer';});
  const byLabel=Object.fromEntries(citations.filter(c=>c.type==='paragraph').map(c=>[c.label,c]));
  const walker=document.createTreeWalker(holder,NodeFilter.SHOW_TEXT);const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
- for(const node of nodes){if(node.parentElement.closest('pre,code,a'))continue;const re=/\[(P\d+)\]/g;let match,last=0;const frag=document.createDocumentFragment();let changed=false;
+ for(const node of nodes){if(node.parentElement.closest('pre,code,a,.math-formula,.math-fallback,math,annotation'))continue;const re=/\[(P\d+)\]/g;let match,last=0;const frag=document.createDocumentFragment();let changed=false;
   while((match=re.exec(node.textContent))){const c=byLabel[match[1]];if(!c)continue;frag.append(node.textContent.slice(last,match.index));const b=document.createElement('button');b.className='citation-button';b.dataset.action='citation';b.dataset.paragraph=c.paragraph_id;b.dataset.paper=c.paper_id;b.textContent=`第 ${c.page} 页`;frag.append(b);last=match.index+match[0].length;changed=true;}
   if(changed){frag.append(node.textContent.slice(last));node.replaceWith(frag);}}
  return holder.innerHTML;

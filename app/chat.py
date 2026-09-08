@@ -41,6 +41,8 @@ def conversation(conversation_id):
     runs = {r["message_id"]: get(r["id"]) for r in db.rows("SELECT id,message_id FROM chat_runs WHERE conversation_id=?", (conversation_id,))}
     for message in messages:
         message["citations"] = json.loads(message["citations"])
+        if message["role"] == "user":
+            present_user_message(message, record)
         if message["id"] in runs:
             run = runs[message["id"]]
             message.update({k: run.get(k) for k in ("content", "citations", "status", "model", "effort", "provider", "context_info", "error")})
@@ -48,11 +50,40 @@ def conversation(conversation_id):
     return {"conversation": record, "messages": messages}
 
 
+def present_user_message(message, record):
+    """Separate visible questions/attachments from legacy extracted-text prompt suffixes."""
+    message["display_content"] = message["content"]
+    message["attachments"] = []
+    ids = [s["selection_id"] for s in message["citations"] if s.get("type") == "selection" and s.get("selection_id")]
+    if not ids and record.get("selection_id") and "\nPDF 选区 [S1]：" in message["content"]:
+        ids = [record["selection_id"]]  # Pre-0.7 user messages had no selection citations.
+    for selection_id in dict.fromkeys(ids):
+        try:
+            selection = selections.get(selection_id)
+        except HTTPException:
+            continue
+        if selection["paper_id"] != record["paper_id"]:
+            continue
+        attachment = {k: selection[k] for k in ("kind", "page", "text", "image_url")}
+        attachment["selection_id"] = selection_id
+        message["attachments"].append(attachment)
+        suffix = ("\n我选中的文字：\n" + selection["text"] if selection["text"] else "")
+        suffix += f"\nPDF 选区 [S1]：第 {selection['page']} 页，类型 {selection['kind']}。"
+        start = message["display_content"].rfind(suffix)
+        if start >= 0:
+            tail = message["display_content"][start + len(suffix):]
+            if re.fullmatch(r"(?:只把选区作为当前关注范围，附近文字仅用于理解上下文。)?(?:\n\[本轮附有 PDF 第 \d+ 页图像\])?", tail):
+                message["display_content"] = message["display_content"][:start]
+
+
 def history(conversation_id):
     rows = conversation(conversation_id)["messages"] if conversation_id else []
     included, size = [], 0
     for message in reversed(rows):
-        text = message["content"] or ""
+        text = message.get("display_content", message["content"]) or ""
+        for attachment in message.get("attachments", []):
+            label = "历史图片的辅助提取文字（可能乱序）" if attachment["kind"] == "region" else "历史选中文字"
+            text += f"\n{label} · 第 {attachment['page']} 页：\n{attachment['text']}"
         if message.get("status") in {"stopped", "failed", "interrupted"}:
             text += "\n[这条回答未完成，不代表最终结论。]"
         # Resolve old labels to stable page references instead of reusing the current P mapping.
@@ -107,8 +138,10 @@ async def start(body):
     paper, context, sources = ai.paper_context(body.paper_id, body.paragraph_id, body.question + " " + selected_text)
     provider, model, effort = options(body)
     previous, context_info = history(body.conversation_id)
-    context_info.update(sources=sources, focus=selected_text or ("PDF 第 " + str(selection["page"]) + " 页图片区域" if selection else paper["title"]))
-    question = body.question + ("\n我选中的文字：\n" + selected_text if selected_text else "")
+    region = bool(selection and selection["kind"] == "region")
+    context_info.update(sources=sources, focus=("PDF 第 " + str(selection["page"]) + " 页图片区域" if region else selected_text or paper["title"]))
+    label = "图片的辅助提取文字（可能乱序，以所附图像为准）" if region else "我选中的文字"
+    question = body.question + ("\n" + label + "：\n" + selected_text if selected_text else "")
     user_sources = []
     if selection:
         question += f"\nPDF 选区 [S1]：第 {selection['page']} 页，类型 {selection['kind']}。"
@@ -124,7 +157,7 @@ async def start(body):
         if not body.conversation_id:
             c.execute("INSERT INTO conversations(id,paper_id,paragraph_id,title,created_at,selection_id) VALUES (?,?,?,?,?,?)",
                       (conversation_id, body.paper_id, body.paragraph_id, body.question[:70], db.now(), body.selection_id))
-        c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (db.uid(), conversation_id, "user", question, json.dumps(user_sources, ensure_ascii=False), db.now()))
+        c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (db.uid(), conversation_id, "user", body.question if selection else question, json.dumps(user_sources, ensure_ascii=False), db.now()))
         c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (message_id, conversation_id, "assistant", "", "[]", db.now()))
         c.execute("INSERT INTO chat_runs VALUES (?,?,?,?,?,?,?)", (run_id, conversation_id, message_id, "running", json.dumps(snapshot, ensure_ascii=False), db.now(), db.now()))
     _live[run_id] = snapshot

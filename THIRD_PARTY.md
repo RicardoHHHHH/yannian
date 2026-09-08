@@ -11,6 +11,7 @@
 | python-multipart | PDF upload forms | Apache-2.0, [upstream](https://github.com/Kludex/python-multipart) |
 | python-dotenv | Local environment configuration | BSD-3-Clause, [upstream](https://github.com/theskumar/python-dotenv) |
 | Marked | Markdown rendering | MIT. Bundled local distribution; license in `static/vendor/MARKED-LICENSE.md`. [Upstream](https://github.com/markedjs/marked) |
+| KaTeX 0.18.7 | Local LaTeX formula rendering with bundled styles and fonts | MIT. License and verified npm SHA-512 metadata in `static/vendor/katex/`. [Upstream](https://github.com/KaTeX/KaTeX), [rendering options](https://katex.org/docs/options) |
 | DOMPurify 3.3.1 | Sanitize model-generated Markdown HTML | Apache-2.0 OR MPL-2.0. License in `static/vendor/DOMPURIFY-LICENSE`. [Upstream](https://github.com/cure53/DOMPurify) |
 
 Python packages retain their own license files in their installed distributions. The source archive does not bundle a Python interpreter or virtual environment.

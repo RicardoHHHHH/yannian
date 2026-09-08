@@ -193,3 +193,37 @@ def test_api_model_effort_and_cancel_close_the_response_connection(client, monke
     stopped = client.post('/api/chat/runs/' + run['id'] + '/cancel').json()
     assert stopped['status'] == 'stopped' and closed.is_set()
     assert payloads[0]['model'] == 'api-selected' and payloads[0]['reasoning'] == {'effort': 'high'}
+
+
+def test_region_question_displays_image_but_sends_pixels_and_auxiliary_text(client, monkeypatch):
+    import pymupdf as fitz
+    captured = []
+    async def reply(instructions, messages, **kwargs):
+        captured.append(messages)
+        return {'content': 'Figure answer', 'citations': []}
+    monkeypatch.setattr(ai, 'respond', reply)
+    with fitz.open() as document:
+        page = document.new_page(width=400, height=300)
+        page.draw_rect(fitz.Rect(20, 60, 380, 210), color=(1, 0, 0))
+        page.insert_text((30, 90), 'Figure labels: Challenger Executor Reward')
+        pdf = document.tobytes()
+    p = client.post('/api/papers/upload', files={'file': ('fixture.pdf', pdf, 'application/pdf')}).json()['paper']
+    selection = client.post('/api/papers/' + p['id'] + '/selections', json={'page': 1, 'kind': 'region', 'rects': [[0, 0, 1, 1]]}).json()
+    run = client.post('/api/chat/runs', json={'paper_id': p['id'], 'paragraph_id': selection['paragraph_id'], 'selection_id': selection['id'], 'question': 'Explain this figure'}).json()
+    wait_run(client, run['id'])
+    user = client.get('/api/conversations/' + run['conversation_id']).json()['messages'][0]
+    assert user['content'] == user['display_content'] == 'Explain this figure'
+    assert user['attachments'][0]['kind'] == 'region'
+    assert user['attachments'][0]['image_url'] == selection['image_url']
+    sent = captured[0][-1]['content']
+    assert sent[1]['type'] == 'input_image' and sent[1]['image_url'].startswith('data:image/png;base64,')
+    assert 'Challenger' in sent[0]['text'] and '可能乱序' in sent[0]['text']
+    # Read legacy conversations cleanly without rewriting their stored messages.
+    legacy = 'Explain this figure\n我选中的文字：\n' + selection['text'] + '\nPDF 选区 [S1]：第 1 页，类型 region。'
+    db.execute("UPDATE messages SET content=?,citations='[]' WHERE id=?", (legacy, user['id']))
+    restored = client.get('/api/conversations/' + run['conversation_id']).json()['messages'][0]
+    assert restored['display_content'] == 'Explain this figure' and restored['attachments'][0]['kind'] == 'region'
+    assert db.one('SELECT content FROM messages WHERE id=?', (user['id'],))['content'] == legacy
+    history, _ = chat.history(run['conversation_id'])
+    assert history[0]['content'].count('Challenger') == 1
+    assert '可能乱序' in history[0]['content']

@@ -270,5 +270,15 @@ async function checkChatControls(){
  await run('window.oldPoll');
  assert.equal(run('state.chatRun.id'),'new-run');assert.equal(run('state.chatBusy'),false);
  passed++;console.log('PASS late polling results cannot overwrite a newer conversation turn');
+
+ run(`state.pdfSelection={id:'figure-selection',kind:'region',page:2,text:'MESSY FIGURE LABELS',image_url:'/api/selections/figure-selection/image.png'};state.selectedText='MESSY FIGURE LABELS';`);
+ const contextMarkup=run('focusedSelectionMarkup()');
+ assert.ok(contextMarkup.includes('<img')&&contextMarkup.includes('/api/selections/figure-selection/image.png'));
+ assert.ok(!contextMarkup.includes('context-quote'));
+ assert.ok(contextMarkup.includes('<details class="selection-extracted">')&&!contextMarkup.includes('selection-extracted" open'));
+ const userMarkup=run(`userMessageMarkup({content:'Explain\\nMESSY FIGURE LABELS',display_content:'Explain this figure',attachments:[{selection_id:'figure-selection',kind:'region',page:2,text:'MESSY FIGURE LABELS'}]})`);
+ assert.ok(userMarkup.includes('Explain this figure')&&userMarkup.includes('<img'));
+ assert.ok(!userMarkup.includes('MESSY FIGURE LABELS'));
+ passed++;console.log('PASS figure attachments show the original crop and hide extracted layout text by default');
 }
 checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});

@@ -91,7 +91,7 @@ class AppServer:
                 cwd=str(db.ROOT), env=environment, bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             threading.Thread(target=self._read, daemon=True).start()
-            self.rpc("initialize", {"clientInfo": {"name": "yannian_workbench", "title": "研念", "version": "0.7.0"},
+            self.rpc("initialize", {"clientInfo": {"name": "yannian_workbench", "title": "研念", "version": "0.7.1"},
                                     "capabilities": {"experimentalApi": True}})
             self.send({"method": "initialized", "params": {}})
             return self
