@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>研念 · 与论文一起思考</title>
+  <link rel="icon" href="/static/yannian-app.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/yannian-logo.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/discovery.css">
+  <link rel="stylesheet" href="/static/vendor/pdfjs/text_layer.css">
+  <link rel="stylesheet" href="/static/pdf-reader.css">
+  <link rel="stylesheet" href="/static/layout.css">
+  <script type="module" src="/static/pdf-reader.mjs"></script>
+  <script defer src="/static/vendor/marked.js"></script>
+  <script defer src="/static/vendor/purify.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="navigation-sidebar" aria-label="主导航">
+      <a class="brand" href="#" aria-label="研念首页"><img class="brand-logo" src="/static/yannian-logo.png" alt="研念 Logo"><span>研念<small>YANNIAN</small></span></a>
+      <div class="workspace-label"><span class="avatar">我</span><div>个人研究空间<small>论文、证据与新的可能</small></div></div>
+      <nav id="navigation"></nav>
+      <div class="section-label">研究项目<button class="icon-button" id="new-project" title="新建项目" aria-label="新建项目">＋</button></div>
+      <div id="project-list" class="project-list"></div>
+      <button id="organize" class="organize-button"></button>
+      <div class="sidebar-bottom">
+        <button id="quick-idea" class="quick-idea"><span>✧</span><div>捕捉一个想法<small>灵感出现的时候，先留下它。</small></div></button>
+        <button class="sidebar-control" id="zotero-button"></button>
+        <button class="sidebar-control" id="settings-button"></button>
+        <div class="local-indicator"><span></span> 数据保存在本机 <a href="/api/export" title="导出完整备份">导出备份 ↗</a></div>
+      </div>
+    </aside>
+    <div class="workspace" id="workspace">
+      <main class="main" id="main-pane" tabindex="-1">
+        <header class="topbar"><div class="topbar-start"><button class="button ghost small panel-toggle" id="sidebar-toggle" aria-controls="navigation-sidebar" aria-expanded="true" title="收起导航栏">☰ <span>收起导航</span></button><div id="breadcrumb">个人空间 <span>/</span> 文献库</div></div><div class="topbar-actions"><span id="connection-state" class="connection-state"></span><button class="button ghost small panel-toggle" id="assistant-toggle" aria-controls="assistant-panel" aria-expanded="true" hidden>收起对话</button><button class="button primary small" id="import-button">＋ 导入论文</button></div></header>
+        <div id="main-content" class="main-content"></div>
+      </main>
+      <aside id="assistant-panel" class="assistant-panel" aria-label="论文 AI 对话"></aside>
+    </div>
+  </div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="selection-menu" class="selection-menu" hidden><button id="selection-ask">问选中文字</button><button id="selection-idea">记为 idea</button></div>
+</body>
+</html>
