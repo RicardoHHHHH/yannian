@@ -27,7 +27,7 @@ jobs:
             python: '3.13'
     env:
       YANNIAN_PORT: '18765'
-      YANNIAN_DATA_DIR: ${{ runner.temp }}/yannian-test-data
+      YANNIAN_DATA_DIR: ${{ github.workspace }}/data
       PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v7
