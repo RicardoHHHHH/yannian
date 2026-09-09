@@ -1,6 +1,14 @@
 export const PAGE_GAP = 28;
 export const PAGE_PADDING = 16;
 
+// Supersample small text, honor high-DPI screens, and bound each canvas allocation.
+export function canvasSize(width, height, deviceRatio=1) {
+  const ratio=Number.isFinite(deviceRatio)&&deviceRatio>0?deviceRatio:1;
+  const scale=Math.min(Math.max(2,ratio),Math.sqrt(20_000_000/(width*height)),8192/width,8192/height);
+  const pixelsWide=Math.max(1,Math.floor(width*scale)),pixelsHigh=Math.max(1,Math.floor(height*scale));
+  return {width:pixelsWide,height:pixelsHigh,scaleX:pixelsWide/width,scaleY:pixelsHigh/height};
+}
+
 export function layoutPages(sizes, zoom, availableWidth) {
   let top = PAGE_PADDING;
   return sizes.map(([width, height], index) => {

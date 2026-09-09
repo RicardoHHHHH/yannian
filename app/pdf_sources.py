@@ -15,6 +15,46 @@ class FetchError(ValueError):
     pass
 
 
+def progress(callback, phase, **fields):
+    if callback:
+        callback({'phase': phase, **fields})
+
+
+async def fetch_ranges(client, url, total, etag, on_progress=None):
+    """Use four bounded ranges only when the source identifies one stable file."""
+    counts = [0] * 4
+    progress(on_progress, 'downloading', downloaded_bytes=0, total_bytes=total, parallel=True)
+
+    async def part(index):
+        start, end = total * index // 4, total * (index + 1) // 4 - 1
+        await public_url(url)
+        headers = {'Range': f'bytes={start}-{end}', 'If-Range': etag, 'Accept-Encoding': 'identity'}
+        async with client.stream('GET', url, headers=headers) as response:
+            expected = f'bytes {start}-{end}/{total}'
+            if (response.status_code != 206 or response.headers.get('content-range') != expected
+                    or response.headers.get('etag') != etag
+                    or response.headers.get('content-encoding', 'identity').lower() != 'identity'):
+                raise FetchError('来源未返回一致的 PDF 分段，改为普通下载')
+            data = bytearray()
+            async for chunk in response.aiter_bytes():
+                data.extend(chunk)
+                if len(data) > end - start + 1:
+                    raise FetchError('PDF 分段长度不一致')
+                counts[index] = len(data)
+                progress(on_progress, 'downloading', downloaded_bytes=sum(counts), total_bytes=total, parallel=True)
+            if len(data) != end - start + 1:
+                raise FetchError('PDF 分段未完整传输')
+            return bytes(data)
+
+    tasks = [asyncio.create_task(part(i)) for i in range(4)]
+    try:
+        return b''.join(await asyncio.gather(*tasks))
+    finally:
+        for task in tasks:
+            if not task.done(): task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def normalized_title(value):
     return re.sub(r"[^\w]", "", unicodedata.normalize("NFKC", research.text_only(value)).casefold())
 
@@ -106,11 +146,13 @@ class PDFLinks(HTMLParser):
                 pass
 
 
-async def fetch_bytes(client, url, require_pdf=False, allow_pdf=False):
+async def fetch_bytes(client, url, require_pdf=False, allow_pdf=False, on_progress=None, parallel=False):
     """Check every redirect, cap streamed bytes, and reject login/HTML pages as PDFs."""
     for _ in range(5):
+        progress(on_progress, 'connecting', source=None, downloaded_bytes=0, total_bytes=None, parallel=False)
         await public_url(url)
-        async with client.stream("GET", url) as response:
+        progress(on_progress, 'connecting', source=urlparse(url).hostname)
+        async with client.stream("GET", url, headers={'Accept-Encoding': 'identity'}) as response:
             if response.is_redirect:
                 target = response.headers.get("location")
                 if not target: raise FetchError("来源返回空跳转")
@@ -121,14 +163,33 @@ async def fetch_bytes(client, url, require_pdf=False, allow_pdf=False):
             response.raise_for_status()
             is_pdf = "application/pdf" in response.headers.get("content-type", "").lower() or require_pdf or allow_pdf
             limit = pdf.MAX_BYTES if is_pdf else 3_000_000
+            total = None
             try:
-                if int(response.headers.get("content-length", 0)) > limit: raise FetchError("文件超过大小限制（PDF 最多 40 MB）")
+                total = int(response.headers.get("content-length", 0)) or None
+                if total is not None and total > limit: raise FetchError("文件超过大小限制（PDF 最多 40 MB）")
             except ValueError as exc:
                 if isinstance(exc, FetchError): raise
+            etag = response.headers.get('etag', '')
+            if (parallel and response.status_code == 200 and (require_pdf or 'application/pdf' in response.headers.get('content-type', '').lower())
+                    and total and 4_000_000 <= total <= pdf.MAX_BYTES and response.headers.get('accept-ranges', '').lower() == 'bytes'
+                    and etag.startswith('"') and etag.endswith('"')
+                    and response.headers.get('content-encoding', 'identity').lower() == 'identity'):
+                final = str(response.url)
+                await response.aclose()
+                try:
+                    data = await fetch_ranges(client, final, total, etag, on_progress)
+                    if not data.lstrip().startswith(b'%PDF-'):
+                        raise FetchError('来源未返回 PDF')
+                    return data, final
+                except (httpx.HTTPError, FetchError):
+                    progress(on_progress, 'retrying', downloaded_bytes=0, total_bytes=total, parallel=False)
+                    return await fetch_bytes(client, final, require_pdf=require_pdf, allow_pdf=allow_pdf, on_progress=on_progress)
             body = bytearray()
+            progress(on_progress, 'downloading', downloaded_bytes=0, total_bytes=total, parallel=False)
             async for chunk in response.aiter_bytes():
                 body.extend(chunk)
                 if len(body) > limit: raise FetchError("文件超过大小限制（PDF 最多 40 MB）")
+                progress(on_progress, 'downloading', downloaded_bytes=len(body), total_bytes=total, parallel=False)
             data = bytes(body)
             if require_pdf and not data.lstrip().startswith(b"%PDF-"):
                 raise FetchError("来源返回网页或验证页面，未得到 PDF")
@@ -138,10 +199,9 @@ async def fetch_bytes(client, url, require_pdf=False, allow_pdf=False):
     raise FetchError("下载跳转次数过多")
 
 
-async def fetch_from_url(url):
+async def fetch_from_url(url, on_progress=None):
     """Resolve only the user's supplied page/document; do not run a literature search."""
     url = https_url(url.strip())
-    await public_url(url)
     async with httpx.AsyncClient(timeout=httpx.Timeout(35, connect=10), headers={"User-Agent": research.UA}, follow_redirects=False) as client:
         def result(data, final, metadata=None):
             return {'data': data, 'url': final, 'source': 'arXiv' if arxiv_id(url) else (urlparse(final).hostname or '网址导入'),
@@ -150,14 +210,15 @@ async def fetch_from_url(url):
         direct = known_pdf(url)
         if direct and direct != url:
             try:
-                data, final = await fetch_bytes(client, direct, require_pdf=True)
+                data, final = await fetch_bytes(client, direct, require_pdf=True, on_progress=on_progress, parallel=True)
                 return result(data, final)
             except (httpx.HTTPError, FetchError):
                 pass  # The original article page can still expose an alternate PDF location.
-        data, final = await fetch_bytes(client, url, allow_pdf=True)
+        data, final = await fetch_bytes(client, url, allow_pdf=True, on_progress=on_progress, parallel=True)
         if data.lstrip().startswith(b'%PDF-'):
             return result(data, final)
         parser = PDFLinks()
+        progress(on_progress, 'resolving', downloaded_bytes=0, total_bytes=None)
         parser.feed(data.decode('utf-8', errors='replace'))
         links = list(dict.fromkeys(link for link in parser.links if link))
         metadata = {**parser.metadata, 'title': research.text_only(parser.title).strip()[:1000],
@@ -173,7 +234,7 @@ async def fetch_from_url(url):
         last_error = None
         for link in links[:4]:
             try:
-                content, pdf_url = await fetch_bytes(client, https_url(urljoin(final, link)), require_pdf=True)
+                content, pdf_url = await fetch_bytes(client, https_url(urljoin(final, link)), require_pdf=True, on_progress=on_progress, parallel=True)
                 return result(content, pdf_url, metadata)
             except (httpx.HTTPError, FetchError) as exc:
                 last_error = exc

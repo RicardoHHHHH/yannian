@@ -155,3 +155,40 @@ def test_multiline_title_keeps_both_lines_with_slightly_different_font_sizes():
         page.insert_text((70,220),'Abstract',fontsize=12)
         parsed=pdf.parse_pdf(doc.tobytes(),'paper.pdf')
     assert parsed['title']=='Medical Agents: Language Models for Medical Reasoning'
+
+
+def test_import_reports_transfer_then_parse_and_completed_progress(client, monkeypatch):
+    from app.main import PDF_IMPORT_PROGRESS, pdf_import_progress
+    progress_id='test-progress-complete'
+    PDF_IMPORT_PROGRESS.pop(progress_id, None)
+    phases=[]
+    async def fetch(url, on_progress):
+        on_progress({'phase':'downloading','downloaded_bytes':2048,'total_bytes':4096,'parallel':True})
+        snapshot=pdf_import_progress(progress_id)
+        assert snapshot['downloaded_bytes']==2048 and snapshot['total_bytes']==4096
+        assert snapshot['phase']=='downloading' and snapshot['elapsed_seconds']>=0
+        return {'data':pdf_bytes(),'url':url,'source':'test'}
+    original_parse=pdf.parse_pdf
+    def parse(*args):
+        phases.append(PDF_IMPORT_PROGRESS[progress_id]['phase'])
+        return original_parse(*args)
+    monkeypatch.setattr(pdf_sources,'fetch_from_url',fetch)
+    monkeypatch.setattr(pdf,'parse_pdf',parse)
+    response=client.post('/api/papers/from-url',json={'url':'https://papers.example/progress.pdf','progress_id':progress_id})
+    assert response.status_code==200,response.text
+    assert phases==['parsing']
+    state=client.get('/api/pdf-imports/'+progress_id).json()
+    assert state['phase']=='completed' and not any(k.startswith('_') for k in state)
+    assert client.get('/api/pdf-imports/not-found').status_code==404
+
+
+def test_failed_import_marks_progress_terminal(client, monkeypatch):
+    from app.main import PDF_IMPORT_PROGRESS
+    progress_id='test-progress-failed'
+    PDF_IMPORT_PROGRESS.pop(progress_id,None)
+    async def fetch(url,on_progress):raise pdf_sources.FetchError('Source unavailable')
+    monkeypatch.setattr(pdf_sources,'fetch_from_url',fetch)
+    response=client.post('/api/papers/from-url',json={'url':'https://papers.example/fail.pdf','progress_id':progress_id})
+    assert response.status_code==400
+    assert client.get('/api/pdf-imports/'+progress_id).json()['phase']=='failed'
+    assert not URL_FETCHING

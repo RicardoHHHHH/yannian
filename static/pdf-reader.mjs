@@ -1,6 +1,6 @@
 import {getDocument, GlobalWorkerOptions, TextLayer} from './vendor/pdfjs/legacy/build/pdf.mjs';
 import {normalizedRect, dragRect, boxStyle} from './pdf-geometry.mjs';
-import {layoutPages, nearbyPages, readingPage, capturePosition, restorePosition, PAGE_PADDING} from './pdf-layout.mjs';
+import {layoutPages, nearbyPages, readingPage, capturePosition, restorePosition, canvasSize, PAGE_PADDING} from './pdf-layout.mjs';
 
 GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/legacy/build/pdf.worker.mjs', import.meta.url).href;
 const assets = new URL('./vendor/pdfjs/', import.meta.url).href;
@@ -116,15 +116,15 @@ async function renderRow(session,row) {
     row.frame.style.setProperty('--total-scale-factor',String(viewport.scale*(viewport.userUnit||1)));
     row.frame.style.setProperty('--scale-factor',String(viewport.scale));
     const canvas=document.createElement('canvas');canvas.className='pdf-canvas';canvas.setAttribute('aria-label','PDF 原文第 '+row.number+' 页');
-    const pixelRatio=Math.min(window.devicePixelRatio||1,2,Math.sqrt(14_000_000/(viewport.width*viewport.height)));
-    canvas.width=Math.ceil(viewport.width*pixelRatio);canvas.height=Math.ceil(viewport.height*pixelRatio);
+    const raster=canvasSize(viewport.width,viewport.height,session.pixelRatio);
+    canvas.width=raster.width;canvas.height=raster.height;
     canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';row.canvas=canvas;
     const text=document.createElement('div');text.className='textLayer';
     const marks=document.createElement('div');marks.className='pdf-marks';row.marks=marks;
     const region=document.createElement('div');region.className='pdf-region-tool';region.hidden=session.tool!=='region';row.region=region;
     row.frame.replaceChildren(canvas,text,marks,region);
     row.renderTask=page.render({canvas,canvasContext:canvas.getContext('2d'),viewport,
-      transform:pixelRatio===1?null:[pixelRatio,0,0,pixelRatio,0,0]});
+      transform:[raster.scaleX,0,0,raster.scaleY,0,0]});
     await row.renderTask.promise;
     if(!current())return;
     const textContent=await page.getTextContent();
@@ -175,6 +175,7 @@ function schedule(session) {
 }
 
 function relayout(session, preserve=true) {
+  session.pixelRatio=window.devicePixelRatio||1;
   const position=capturePosition(session.layouts,session.scroll.scrollTop);
   const oldWidth=session.list?.clientWidth||1;
   const center=(session.scroll.scrollLeft+session.scroll.clientWidth/2)/oldWidth;
@@ -191,6 +192,21 @@ function relayout(session, preserve=true) {
     session.scroll.scrollLeft=Math.max(0,center*session.list.clientWidth-session.scroll.clientWidth/2);
   }
   schedule(session);
+}
+
+function refreshResolution(session){
+  if(!valid(session)||session.pixelRatio===(window.devicePixelRatio||1))return;
+  session.pixelRatio=window.devicePixelRatio||1;
+  // Density changes need new pixels, not new CSS page positions or scroll anchors.
+  for(const row of session.rows)disposeRow(row);
+  schedule(session);
+}
+function watchResolution(session){
+  const media=window.matchMedia?.(`(resolution: ${window.devicePixelRatio||1}dppx)`);
+  media?.addEventListener('change',()=>{
+    if(!valid(session))return;
+    refreshResolution(session);watchResolution(session);
+  },{once:true,signal:session.events.signal});
 }
 
 function goToPage(number,rects=null) {
@@ -217,7 +233,7 @@ async function mount(options) {
   if(active?.host===host&&active.paperId===paperId){
     const zoomChanged=active.zoom!==zoom;
     Object.assign(active,{zoom,tool,selection,onSelection,onPageChange,onScroll,onError});
-    if(zoomChanged&&active.rows.length)relayout(active);
+    if(zoomChanged&&active.rows.length)relayout(active);else refreshResolution(active);
     applyTools(active);return;
   }
   stopRender();
@@ -251,11 +267,13 @@ async function mount(options) {
     session.scroll.replaceChildren(session.list);relayout(session,false);
     goToPage(session.pageNumber,session.pendingRects);
     session.scroll.addEventListener('scroll',()=>{session.onScroll?.();schedule(session);},{passive:true,signal:session.events.signal});
+    window.addEventListener?.('resize',()=>refreshResolution(session),{signal:session.events.signal});
+    watchResolution(session);
     session.observer=new ResizeObserver(()=>{
       if(!valid(session))return;
       if(Math.abs(session.scroll.clientWidth-session.width)>=2){
         clearTimeout(session.resizeTimer);session.resizeTimer=setTimeout(()=>{if(valid(session))relayout(session);},140);
-      }else schedule(session);
+      }else{refreshResolution(session);schedule(session);}
     });
     session.observer.observe(session.scroll);statusText(session);
   }catch(error){

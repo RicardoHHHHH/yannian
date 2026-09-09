@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import {layoutPages,nearbyPages,readingPage,capturePosition,restorePosition,PAGE_GAP} from '../static/pdf-layout.mjs';
+import {layoutPages,nearbyPages,readingPage,capturePosition,restorePosition,canvasSize,PAGE_GAP} from '../static/pdf-layout.mjs';
+
+assert.deepEqual(canvasSize(600,800,1),{width:1200,height:1600,scaleX:2,scaleY:2});
+assert.deepEqual(canvasSize(600,800,3),{width:1800,height:2400,scaleX:3,scaleY:3});
+assert.deepEqual(canvasSize(600,800,NaN),canvasSize(600,800,1));
+for(const [w,h,dpr] of [[1600,2200,3],[12000,18000,4],[100,30000,3],[30000,100,3]]){
+ const pixels=canvasSize(w,h,dpr);
+ assert.ok(pixels.width*pixels.height<=20_000_000);
+ assert.ok(pixels.width<=8192&&pixels.height<=8192);
+ assert.equal(pixels.scaleX,pixels.width/w);assert.equal(pixels.scaleY,pixels.height/h);
+}
 
 const sizes=Array.from({length:500},()=>[600,800]);
 const pages=layoutPages(sizes,'fit',600);

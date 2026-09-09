@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import zipfile
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
@@ -37,9 +38,10 @@ async def lifespan(app):
         await discovery.shutdown()
 
 
-app = FastAPI(title="研念 · Yannian Workbench", version="0.7.3", lifespan=lifespan)
+app = FastAPI(title="研念 · Yannian Workbench", version="0.7.4", lifespan=lifespan)
 PDF_FETCHING = set()
 URL_FETCHING = set()
+PDF_IMPORT_PROGRESS = {}
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
 
 
@@ -208,6 +210,7 @@ class ArxivBody(BaseModel):
 class URLImportBody(BaseModel):
     url: str = Field(min_length=5, max_length=3000)
     project_id: str | None = None
+    progress_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{8,80}$')
 
 
 class AnalyzeBody(BaseModel):
@@ -218,7 +221,7 @@ class AnalyzeBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.7.3", "app": "yannian-workbench"}
+    return {"ok": True, "version": "0.7.4", "app": "yannian-workbench"}
 
 
 @app.get("/api/settings")
@@ -379,6 +382,39 @@ def save_url_pdf(result, original_url, project_id):
     return saved
 
 
+def start_import_progress(progress_id):
+    if not progress_id:
+        return None
+    now = time.monotonic()
+    for key, value in list(PDF_IMPORT_PROGRESS.items()):
+        if value.get('_ended') and (now - value['_ended'] > 600 or len(PDF_IMPORT_PROGRESS) >= 128):
+            PDF_IMPORT_PROGRESS.pop(key, None)
+    if progress_id in PDF_IMPORT_PROGRESS:
+        raise HTTPException(409, '这个导入标识已使用，请重新提交。')
+    if len(PDF_IMPORT_PROGRESS) >= 128:
+        raise HTTPException(429, '正在处理的下载过多，请稍后重试。')
+    record = {'phase': 'connecting', 'downloaded_bytes': 0, 'total_bytes': None, '_started': now}
+    PDF_IMPORT_PROGRESS[progress_id] = record
+
+    def update(event):
+        record.update(event)
+        if event['phase'] in ('completed', 'failed'):
+            record['_ended'] = time.monotonic()
+    return update
+
+
+@app.get('/api/pdf-imports/{progress_id}')
+def pdf_import_progress(progress_id: str):
+    record = PDF_IMPORT_PROGRESS.get(progress_id)
+    if record is None:
+        raise HTTPException(404, '尚无这个下载的进度。')
+    record = record.copy()
+    elapsed = max(0, record.get('_ended', time.monotonic()) - record['_started'])
+    return {**{k: v for k, v in record.items() if not k.startswith('_')},
+            'elapsed_seconds': round(elapsed, 1),
+            'bytes_per_second': round(record.get('downloaded_bytes', 0) / max(elapsed, .1))}
+
+
 @app.post('/api/papers/from-url')
 async def import_pdf_url(body: URLImportBody):
     url = pdf_sources.https_url(body.url.strip())
@@ -392,17 +428,21 @@ async def import_pdf_url(body: URLImportBody):
     project = require('projects', body.project_id) if body.project_id else None
     if url in URL_FETCHING:
         raise HTTPException(409, '这个网址正在下载，请等待当前导入完成。')
+    report = start_import_progress(body.progress_id)
     URL_FETCHING.add(url)
     try:
         existing = db.one("SELECT * FROM papers WHERE (url=? OR pdf_origin=?) AND pdf_path IS NOT NULL LIMIT 1", (url, url))
         if existing:
             if body.project_id: add_membership(existing['id'], body.project_id)
+            if report: report({'phase': 'completed'})
             return {'status':'ready', 'paper':paper_public(existing), 'duplicate':True, 'warning':'',
                     'project':project, 'download_url':existing.get('pdf_origin') or url}
         try:
             async with asyncio.timeout(150):
-                result = await pdf_sources.fetch_from_url(url)
+                result = await pdf_sources.fetch_from_url(url, **({'on_progress': report} if report else {}))
+            if report: report({'phase': 'parsing'})
             saved = await asyncio.to_thread(save_url_pdf, result, url, body.project_id)
+            if report: report({'phase': 'completed'})
         except pdf_sources.FetchError as exc:
             raise HTTPException(400, str(exc)) from exc
         except TimeoutError as exc:
@@ -411,6 +451,8 @@ async def import_pdf_url(body: URLImportBody):
             raise HTTPException(502, '该网址暂时无法下载，可能已失效或受到访问限制。') from exc
         return {**saved, 'status':'ready', 'project':project, 'download_url':result['url']}
     finally:
+        if report and PDF_IMPORT_PROGRESS[body.progress_id]['phase'] != 'completed':
+            report({'phase': 'failed'})
         URL_FETCHING.discard(url)
 
 

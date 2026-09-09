@@ -116,6 +116,16 @@ test('every discovery source offers automatic PDF acquisition including DOI-only
  const html=run(`resultMarkup({title:'A medical research article',url:'https://doi.org/10.123/example',source:'Crossref'},7)`);
  assert.ok(html.includes('data-fetch-result="7"')&&html.includes('获取 PDF 并阅读'));
 });
+
+test('URL imports show measured download progress and distinguish parsing from transfer',()=>{
+ run(`state.urlImport.progress={phase:'downloading',downloaded_bytes:5000000,total_bytes:10000000,bytes_per_second:250000,elapsed_seconds:20,parallel:true,source:'<script>bad</script>'}`);
+ const downloading=run('urlImportProgressMarkup()');
+ assert.ok(downloading.includes('5.0 / 10.0 MB')&&downloading.includes('250 KB/s')&&downloading.includes('20 秒'));
+ assert.ok(downloading.includes('value="5000000"')&&!downloading.includes('<script>'));
+ run(`state.urlImport.progress={phase:'parsing',downloaded_bytes:10000000,total_bytes:10000000,elapsed_seconds:40}`);
+ assert.ok(run('urlImportProgressMarkup()').includes('PDF 已下载，正在解析并保存'));
+ assert.ok(!run('urlImportProgressMarkup()').includes('<progress'));
+});
 test('metadata reader offers automatic download and saved PDF shows provenance',()=>{
  run(`state.paper={id:'paper-a',title:'Selected paper',source:'Crossref',has_pdf:false,paragraphs:[]};renderReader()`);
  assert.ok(node('#main-content').innerHTML.includes('data-action="fetch-pdf"'));

@@ -24,12 +24,13 @@ host.querySelector=selector=>selector==='.pdf-scroll'?scroll:status;
 let nativeSelection={isCollapsed:true,removeAllRanges(){this.isCollapsed=true;}};
 const frames=new Map();let frameId=0,documentCount=0,cancelled=0;
 const changes=[],selections=[],errors=[];
+const windowEvents=new Element();
 const delayed=[];
 let delayRenders=false,failPage=null;
 const context=vm.createContext({
   ...geometry,...layout,URL,console,AbortController,setTimeout,clearTimeout,
   document:{createElement:tag=>new Element(tag)},
-  window:{devicePixelRatio:1,getSelection:()=>nativeSelection,dispatchEvent(){}},Event:class{},
+  window:{devicePixelRatio:1,getSelection:()=>nativeSelection,dispatchEvent(){},addEventListener:(...args)=>windowEvents.addEventListener(...args)},Event:class{},
   requestAnimationFrame(fn){frames.set(++frameId,fn);return frameId;},cancelAnimationFrame(id){frames.delete(id);},
   ResizeObserver:class{observe(){}disconnect(){}},GlobalWorkerOptions:{},
   getDocument(){documentCount++;return {destroy:async()=>{},promise:Promise.resolve({numPages:25,getPage:async number=>({
@@ -60,6 +61,7 @@ await reader.mount(options);await flush();
 assert.equal(slots().length,25,'All page slots must exist to support continuous scrolling.');
 assert.ok(canvasCount()>0&&canvasCount()<5,'Only nearby pages need canvases.');
 const firstCanvas=find(1,'pdf-canvas'),originalList=scroll.children[0];
+assert.equal(firstCanvas.width,1200,'Standard-density displays still get a 2x text canvas.');
 const pages=layout.layoutPages(options.pageSizes,'fit',600);
 scroll.scrollTop=pages[1].top+200;scroll.listeners.scroll();await flush();
 assert.equal(changes.at(-1),2);assert.ok(find(2,'pdf-canvas'));
@@ -121,5 +123,11 @@ assert.ok(cancelled>0);assert.ok(find(4,'pdf-canvas'));assert.equal(find(20,'pdf
 failPage=8;reader.goToPage(8);await flush();
 assert.equal(errors.length,1);assert.equal(frame(8).children[0].className,'pdf-page-error');
 failPage=null;frame(8).children[0].children[0].onclick();await flush();assert.ok(find(8,'pdf-canvas'));
+const lowDensityCanvas=find(8,'pdf-canvas'),densityPosition=scroll.scrollTop;
+context.window.devicePixelRatio=3;windowEvents.listeners.resize();await flush();
+assert.equal(lowDensityCanvas.width,0,'A pixel-density change must release the old-resolution canvas.');
+assert.equal(find(8,'pdf-canvas').width,frame(8).getBoundingClientRect().width*3);
+assert.equal(scroll.scrollTop,densityPosition);assert.equal(documentCount,1);
 reader.clear();assert.equal(scroll.listeners.scroll,undefined);assert.equal(canvasCount(),0);
+assert.equal(windowEvents.listeners.resize,undefined);
 console.log('PDF reader lifecycle: 25 continuous pages, lazy eviction, page tracking, tool/zoom position, page-bound selections, jump/return, cancellation, retry and cleanup passed (DOM/PDF stubs, no browser).');

@@ -30,7 +30,7 @@ const state = {view:'library', projectId:null, library:{papers:[],projects:[],id
  ideas:[], idea:null, analyses:[], filter:'', ideaFilter:'all', discover:null, query:'', venue:'all', searchBusy:false,
  analysisBusy:false, searchGeneration:0, searchJob:null, searchDepth:'deep', searchWeb:true, searchLanguage:'english', searchOrder:'relevance', searchPage:1, searchAudit:false, pdfFetching:null,
  layout:readLayoutPreferences(),urlImport:{url:'',projectId:'',busy:false,result:null,error:''}};
-let toastTimer, searchTimer, pdfSelectionVersion=0;
+let toastTimer, searchTimer, urlImportTimer, pdfSelectionVersion=0;
 function clampAssistantRatio(value){const n=Number(value);return Number.isFinite(n)&&n>0?Math.max(.2,Math.min(.7,n)):.34;}
 function applySplitWidth(){
  const ratio=clampAssistantRatio(state.layout.assistantRatio),workspace=$('#workspace'),handle=$('#reader-splitter');
@@ -328,9 +328,24 @@ function discoveryProgress(job){
  const attempts=Object.values(job.sources||{}).reduce((n,s)=>n+(s.attempts||0),0);
  return `<section class="discovery-progress" aria-live="polite"><header><strong>${state.searchBusy?'<span class="spinner"></span> ':''}${names[job.status]||'检索记录'}</strong><span>${Math.floor((job.elapsed_seconds||0)/60)} 分 ${(job.elapsed_seconds||0)%60} 秒${state.searchBusy?' · 正在收集，结果尚未完整':''}</span></header><p>${esc(job.phase||'')}</p><div class="discovery-totals"><span>来源请求 <b>${attempts}</b></span><span>原始记录 <b>${job.raw_count||0}</b></span><span>去重后 <b>${job.papers?.length||0}</b> 篇</span></div><div class="source-grid">${Object.entries(job.sources||{}).map(([name,s])=>`<div class="source-status ${s.status}"><strong>${esc(name)}</strong><span>${sourceNames[s.status]||esc(s.status)}</span><small>${s.count||0} 条 · ${s.pages||0} ${name==='官网补查'?'个网页已检查':'页已返回'}${s.error?'<br>'+esc(s.error):''}</small></div>`).join('')}</div>${job.reading_guide?`<div class="reading-guide"><strong>优先阅读 ${job.reading_guide.prioritized} 篇</strong><p>根据标题与摘要初筛了 ${job.reading_guide.reviewed_candidates} 篇；全部 ${job.papers?.length||0} 篇候选仍可翻页查看。</p><p>${esc(job.reading_guide.coverage||'')}</p></div>`:''}<details id="search-audit" ${state.searchAudit?'open':''}><summary>检索式、来源覆盖与分页记录</summary><p class="subtle">${esc(job.strategy||'')}<br>每个索引、每个检索式最多 ${job.pages_per_query||'—'} 页，每页 ${job.page_size||'—'} 条；合并后的候选全部保留。一次检索不代表穷尽相关论文。</p><div class="filter-chips">${(job.queries||[]).map(q=>`<span class="chip">${esc(q)}</span>`).join('')}</div>${Object.entries(job.sources||{}).map(([name,s])=>`<div class="source-audit"><strong>${esc(name)}</strong>${s.coverage?`<p>${esc(s.coverage)}</p>`:''}${(s.details||[]).map(d=>`<p>${esc(d.query||d.url||'')} ${d.page?'· 第 '+d.page+' 页':''} · ${d.count!==undefined?d.count+' 条 · ':''}${esc(d.reason||({ok:'成功',failed:'失败',verified:'官网元数据已核验',unverified:'未核验通过，未加入结果'}[d.status]||d.status))}</p>`).join('')}</div>`).join('')}</details></section>`;
 }
+function urlImportProgressMarkup(){
+ const p=state.urlImport.progress||{},names={connecting:'正在连接下载来源…',resolving:'正在查找页面中的 PDF 链接…',downloading:p.parallel?'正在并行下载 PDF…':'正在下载 PDF…',retrying:'分段下载未完成，正在切换普通下载…',parsing:'PDF 已下载，正在解析并保存…',completed:'PDF 已保存',failed:'下载未完成，正在读取错误信息…'};
+ const received=Math.max(0,Number(p.downloaded_bytes)||0),total=Math.max(0,Number(p.total_bytes)||0),speed=Math.max(0,Number(p.bytes_per_second)||0);
+ return `<p>${esc(names[p.phase]||'正在准备下载…')}${p.source?' · '+esc(p.source):''}</p>${p.phase==='downloading'?`<progress aria-label="PDF 下载进度" ${total?`max="${total}" value="${Math.min(received,total)}"`:''}></progress><small>${(received/1e6).toFixed(1)}${total?' / '+(total/1e6).toFixed(1):''} MB${speed?' · '+(speed>=1e6?(speed/1e6).toFixed(1)+' MB/s':Math.round(speed/1000)+' KB/s'):''}</small>`:''}<small class="download-elapsed">已用时 ${Math.max(0,Math.floor(p.elapsed_seconds||0))} 秒</small>`;
+}
+async function pollURLImport(id){
+ const d=state.urlImport;if(!d.busy||d.progressId!==id)return;
+ try{
+  const progress=await api('/pdf-imports/'+encodeURIComponent(id));
+  if(!d.busy||d.progressId!==id)return;
+  d.progress=progress;
+  const panel=$('#url-import-progress');if(state.view==='discover'&&panel)panel.innerHTML=urlImportProgressMarkup();
+ }catch{} // The import response remains authoritative if progress polling briefly fails.
+ if(d.busy&&d.progressId===id)urlImportTimer=setTimeout(()=>pollURLImport(id),750);
+}
 function urlImportMarkup(){
  const d=state.urlImport,r=d.result;
- return `<div class="url-import-heading">${icon('link')}<strong>通过网址导入 PDF</strong><small>下载、保存原文并归入项目</small></div><form id="url-import-form" class="url-import-form" aria-label="通过网址导入 PDF"><label class="url-import-address">PDF 或论文页面网址<input id="url-import-address" aria-label="PDF 或论文页面网址" type="url" required maxlength="3000" placeholder="https://…/paper.pdf 或论文详情页链接" value="${esc(d.url)}" ${d.busy?'disabled':''}></label><label>归入项目<select id="url-import-project" aria-label="网址导入归入项目" ${d.busy?'disabled':''}>${projectOptions(d.projectId,'仅保存到文献库')}</select></label><button class="button primary" id="url-import-submit" ${d.busy?'disabled':''}>${d.busy?'<span class="spinner"></span> 下载解析中…':icon('download')+' 下载并保存'}</button></form><p class="url-import-hint">支持公开 PDF 直链、arXiv、OpenReview 和提供 PDF 的论文详情页。重复文件会复用，归类可在文献库中调整。</p><div class="url-import-feedback" role="status" aria-live="polite">${d.busy?'<p>正在读取链接、下载并保存 PDF，请稍候…</p>':''}${d.error?`<div class="notice">${esc(d.error)}</div>`:''}${r?`<div class="url-import-success"><div><strong>${r.duplicate?'已复用文献库中的 PDF':'PDF 已下载保存'} · ${esc(r.paper.title)}</strong><small>${r.project?'已归入「'+esc(r.project.name)+'」':'已保存在文献库'} · ${r.paper.page_count} 页</small>${r.warning?'<small>'+esc(r.warning)+'</small>':''}</div><button class="button small" data-open-paper="${esc(r.paper.id)}">打开阅读 ↗</button></div>`:''}</div>`;
+ return `<div class="url-import-heading">${icon('link')}<strong>通过网址导入 PDF</strong><small>下载、保存原文并归入项目</small></div><form id="url-import-form" class="url-import-form" aria-label="通过网址导入 PDF"><label class="url-import-address">PDF 或论文页面网址<input id="url-import-address" aria-label="PDF 或论文页面网址" type="url" required maxlength="3000" placeholder="https://…/paper.pdf 或论文详情页链接" value="${esc(d.url)}" ${d.busy?'disabled':''}></label><label>归入项目<select id="url-import-project" aria-label="网址导入归入项目" ${d.busy?'disabled':''}>${projectOptions(d.projectId,'仅保存到文献库')}</select></label><button class="button primary" id="url-import-submit" ${d.busy?'disabled':''}>${d.busy?'<span class="spinner"></span> 下载解析中…':icon('download')+' 下载并保存'}</button></form><p class="url-import-hint">支持公开 PDF 直链、arXiv、OpenReview 和提供 PDF 的论文详情页。重复文件会复用，归类可在文献库中调整。</p><div class="url-import-feedback" role="status" aria-live="polite">${d.busy?`<div id="url-import-progress">${urlImportProgressMarkup()}</div>`:''}${d.error?`<div class="notice">${esc(d.error)}</div>`:''}${r?`<div class="url-import-success"><div><strong>${r.duplicate?'已复用文献库中的 PDF':'PDF 已下载保存'} · ${esc(r.paper.title)}</strong><small>${r.project?'已归入「'+esc(r.project.name)+'」':'已保存在文献库'} · ${r.paper.page_count} 页</small>${r.warning?'<small>'+esc(r.warning)+'</small>':''}</div><button class="button small" data-open-paper="${esc(r.paper.id)}">打开阅读 ↗</button></div>`:''}</div>`;
 }
 function bindURLImport(){
  if(!$('#url-import-form'))return;
@@ -348,14 +363,15 @@ async function importPaperURL(){
  if(!d.url)return;
  try{const url=new URL(d.url);if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw new Error();}
  catch{d.error='请输入完整的公开 PDF 或论文页面网址，例如 https://…/paper.pdf。';renderURLImport();return;}
- d.busy=true;d.error='';d.result=null;renderURLImport();
+ d.busy=true;d.error='';d.result=null;d.progress=null;d.progressId='pdf-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);renderURLImport();
+ clearTimeout(urlImportTimer);urlImportTimer=setTimeout(()=>pollURLImport(d.progressId),600);
  try{
-  d.result=await api('/papers/from-url',{method:'POST',body:{url:d.url,project_id:d.projectId||null}});
+  d.result=await api('/papers/from-url',{method:'POST',body:{url:d.url,project_id:d.projectId||null,progress_id:d.progressId}});
   d.url='';
   await refreshLibrary();
   toast(d.result.duplicate?'已有 PDF 已复用，所选项目归类已保存。':'PDF 已下载保存，可以打开阅读。');
  }catch(e){d.error=d.result?'PDF 已保存，但列表刷新失败；重新打开文献库即可查看。':e.message;}
- finally{d.busy=false;renderURLImport();}
+ finally{d.busy=false;clearTimeout(urlImportTimer);renderURLImport();}
 }
 function renderDiscover(){
  const result=state.discover,papers=discoveryPapers(),size=24,pages=Math.max(1,Math.ceil(papers.length/size));state.searchPage=Math.max(1,Math.min(state.searchPage,pages));

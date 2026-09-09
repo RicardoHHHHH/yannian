@@ -132,3 +132,60 @@ def test_auto_attach_failure_keeps_metadata_and_invalid_pdf_unattached(client, m
     assert client.post('/api/papers/'+p['id']+'/fetch-pdf').status_code == 400
     detail = client.get('/api/papers/'+p['id']).json()
     assert not detail['has_pdf'] and not detail['paragraphs']
+
+
+def test_large_stable_pdf_downloads_four_ranges_concurrently(monkeypatch):
+    data = b'%PDF-' + bytes(range(256)) * 16000
+    etag = '"stable-pdf"'
+    events, ranges = [], []
+    ready = asyncio.Event()
+    async def handler(request):
+        value = request.headers.get('range')
+        if not value:
+            return httpx.Response(200, content=data, headers={'Content-Type':'application/pdf','Accept-Ranges':'bytes','ETag':etag})
+        assert request.headers['if-range'] == etag
+        assert request.headers['accept-encoding'] == 'identity'
+        start, end = map(int, value.removeprefix('bytes=').split('-'))
+        ranges.append((start, end))
+        if len(ranges) == 4: ready.set()
+        await asyncio.wait_for(ready.wait(), 1)
+        return httpx.Response(206, content=data[start:end+1], headers={'Content-Range':f'bytes {start}-{end}/{len(data)}','ETag':etag})
+    transport(monkeypatch, handler)
+    result = asyncio.run(pdf_sources.fetch_from_url('https://papers.example/big.pdf', on_progress=events.append))
+    assert result['data'] == data and len(ranges) == 4
+    assert sorted(ranges)[0][0] == 0 and sorted(ranges)[-1][1] == len(data)-1
+    assert events[-1]['downloaded_bytes'] == len(data)
+    assert events[-1]['parallel'] is True
+
+
+@pytest.mark.parametrize('failure', ['ignored', 'changed-etag', 'wrong-range', 'truncated'])
+def test_unreliable_ranges_fall_back_without_saving_mixed_or_truncated_bytes(monkeypatch, failure):
+    data = b'%PDF-' + b'a' * 4_000_000
+    calls, events = [], []
+    def handler(request):
+        value = request.headers.get('range')
+        calls.append(value)
+        if not value or failure == 'ignored':
+            return httpx.Response(200, content=data, headers={'Content-Type':'application/pdf','Accept-Ranges':'bytes','ETag':'"original"'})
+        start, end = map(int, value.removeprefix('bytes=').split('-'))
+        return httpx.Response(206, content=data[start:end+1-(1 if failure=='truncated' else 0)],
+                              headers={'Content-Range':f'bytes {start}-{end}/{len(data)+(1 if failure=="wrong-range" else 0)}',
+                                       'ETag':'"new"' if failure=='changed-etag' else '"original"'})
+    transport(monkeypatch, handler)
+    result = asyncio.run(pdf_sources.fetch_from_url('https://papers.example/big.pdf', on_progress=events.append))
+    assert result['data'] == data
+    assert calls.count(None) == 2
+    assert any(event['phase'] == 'retrying' for event in events)
+    assert events[-1]['parallel'] is False
+
+
+def test_weak_etag_uses_one_stream_even_when_ranges_are_advertised(monkeypatch):
+    data = b'%PDF-' + b'a' * 4_000_000
+    calls = []
+    def handler(request):
+        calls.append(request)
+        assert 'range' not in request.headers
+        return httpx.Response(200, content=data, headers={'Content-Type':'application/pdf','Accept-Ranges':'bytes','ETag':'W/"weak"'})
+    transport(monkeypatch, handler)
+    assert asyncio.run(pdf_sources.fetch_from_url('https://papers.example/big.pdf'))['data'] == data
+    assert len(calls) == 1
