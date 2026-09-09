@@ -73,7 +73,7 @@
 
 ## 快速开始
 
-需要 **Python 3.11+** 和现代浏览器。提供 Windows、macOS、Linux 启动入口；首次自动建立环境与安装依赖，以后仅在依赖清单变化时更新，并复用正在运行的服务。Node.js 仅用于开发测试，日常运行不需要。平台检查结果见 [验证记录](VERIFICATION.md)。
+需要 **Python 3.11+** 和现代浏览器。提供 Windows、macOS、Linux 启动入口；首次自动建立环境与安装依赖，以后仅在依赖清单变化时更新，并复用正在运行的服务。Windows、Apple Silicon Mac、Intel Mac 和 Linux 已通过自动安装与启动检查，详见 [验证记录](VERIFICATION.md)。Node.js 仅用于开发测试，日常运行不需要。
 
 ### Windows
 
