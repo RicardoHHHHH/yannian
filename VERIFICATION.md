@@ -41,6 +41,8 @@ Codex 状态来自 [App Server 的 webSearch 事件](https://learn.chatgpt.com/d
 
 本次前端验收为 DOM 替身和源码测试，未新增真实浏览器视觉验收。
 
+提交 `e52cd64` 的 [0.8.1 GitHub Actions 实际检查](https://github.com/RicardoHHHHH/yannian/actions/runs/34370732379) 四组全部通过：Windows / Python 3.11、macOS Apple Silicon / Python 3.13、macOS Intel / Python 3.11、Linux / Python 3.13。每组包含后端、前端、首次安装、快速启动、服务健康与源码打包。
+
 ## 0.8.0 跨平台安装与启动
 
 提交 `4ad6a12` 的 [GitHub Actions 实际运行](https://github.com/RicardoHHHHH/yannian/actions/runs/34334310989) 全部通过：
