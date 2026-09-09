@@ -16,5 +16,6 @@ dist/
 *.sqlite*
 *.db
 .DS_Store
+.yannian-setup.lock
 Thumbs.db
 desktop.ini

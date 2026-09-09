@@ -38,7 +38,7 @@ async def lifespan(app):
         await discovery.shutdown()
 
 
-app = FastAPI(title="研念 · Yannian Workbench", version="0.7.5", lifespan=lifespan)
+app = FastAPI(title="研念 · Yannian Workbench", version="0.8.0", lifespan=lifespan)
 PDF_FETCHING = set()
 URL_FETCHING = set()
 PDF_IMPORT_PROGRESS = {}
@@ -162,11 +162,16 @@ class SettingsBody(BaseModel):
     provider: Literal["codex", "api"] | None = None
     codex_model: str | None = Field(default=None, max_length=120)
     codex_effort: Literal["low", "medium", "high"] | None = None
-    model: str = Field(default="gpt-6-astra", max_length=120)
-    base_url: str = Field(default="https://api.openai.com/v1", max_length=2000)
+    model: str | None = Field(default=None, max_length=120)
+    base_url: str | None = Field(default=None, max_length=2000)
     api_key: str | None = Field(default=None, max_length=1000)
     clear_key: bool = False
-    web_search: bool = True
+    web_search: bool | None = None
+    api_preset: Literal["openai", "deepseek", "custom"] | None = None
+    api_protocol: Literal["responses", "chat_completions"] | None = None
+    api_images: bool | None = None
+    api_reasoning: bool | None = None
+    api_key_optional: bool | None = None
 
 
 class ChatBody(BaseModel):
@@ -221,7 +226,7 @@ class AnalyzeBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.7.5", "app": "yannian-workbench"}
+    return {"ok": True, "version": "0.8.0", "app": "yannian-workbench"}
 
 
 @app.get("/api/settings")
@@ -246,6 +251,11 @@ async def codex_status():
 async def test_connection():
     result = await ai.respond("请只回复：连接成功。", [{"role": "user", "content": "测试连接"}], max_tokens=500)
     return {"ok": True, "message": result["content"], "model": result["model"], "provider": result.get("provider", ai.settings()["provider"])}
+
+
+@app.get("/api/models")
+async def model_catalog():
+    return await ai.models()
 
 
 @app.get("/api/library")
@@ -753,7 +763,7 @@ def analyses(idea_id: str):
 @app.post("/api/ideas/{idea_id}/analyze")
 async def analyze_idea(idea_id: str, body: AnalyzeBody):
     idea = require("ideas", idea_id)
-    if ai.settings()["provider"] == "api" and not ai.key():
+    if ai.settings()["provider"] == "api" and not ai.settings()["ready"]:
         raise HTTPException(428, "请在模型设置中配置 API Key，然后进行 idea 分析。")
     query = body.query.strip()
     if not query:
@@ -766,7 +776,8 @@ async def analyze_idea(idea_id: str, body: AnalyzeBody):
         "resources": "寻找可用资源。按开源实现、数据集、基准与评价指标、预训练模型、算力与复现条件组织。每个具体资源需要已检索来源链接，说明适配性与许可证/访问条件是否已核实。只知道名称没有证据时列为待核实，禁止编造链接。",
         "experiment": "设计适合AI会议论文验证的最小实验：假设、强基线、数据划分、主指标、消融、预算估算的假设、失败判据、可复现记录。基于已找到的相关工作给基线，不要编造实验结果或硬件性能。"
     }[body.kind]
-    web_enabled = bool(body.web and ai.settings()["web_search"])
+    config = ai.settings()
+    web_enabled = bool(body.web and config["web_search"] and config["supports_web_search"])
     prompt = ("用户研究方向：AI / 顶会。\nIdea：" + idea["title"] + "\n" + idea["body"] +
               "\n触发原文：" + idea["quote"] + "\n检索关键词：" + query +
               "\n候选文献元数据（仅摘要/元数据，未读全文）：\n" + json.dumps(discovered, ensure_ascii=False) +
@@ -777,7 +788,9 @@ async def analyze_idea(idea_id: str, body: AnalyzeBody):
     record = {"id": analysis_id, "idea_id": idea_id, "kind": body.kind, "content": result["content"],
               "sources": sources, "queries": [query], "created_at": db.now()}
     db.execute("INSERT INTO analyses VALUES (?,?,?,?,?,?,?)", (analysis_id, idea_id, body.kind, result["content"], json.dumps(sources, ensure_ascii=False), json.dumps([query]), record["created_at"]))
-    record["warnings"] = discovered["warnings"]
+    record["warnings"] = list(discovered["warnings"])
+    if body.web and not config["supports_web_search"]:
+        record["warnings"].append("当前 API 未提供模型联网工具；本次分析使用学术索引候选与给定资料，未额外核验网页。")
     record["resource_links"] = research.resource_links(query)
     return record
 

@@ -30,3 +30,6 @@ def test_source_package_excludes_personal_data_and_keeps_hidden_templates(tmp_pa
         assert names == set(ROOT_FILES) | {'app/main.py', 'static/index.html', 'static/yannian-app.ico', 'static/vendor/LICENSE', 'static/vendor/pdfjs/legacy/build/pdf.mjs'}
         assert count == len(names)
         assert all(archive.read(name) != b'private' for name in archive.namelist())
+        for name in ('start.sh', 'start.command'):
+            entry = archive.getinfo('yannian/' + name)
+            assert entry.create_system == 3 and (entry.external_attr >> 16) & 0o777 == 0o755

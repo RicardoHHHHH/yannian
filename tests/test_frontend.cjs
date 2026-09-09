@@ -89,6 +89,26 @@ test('discovery keeps English source titles and filters Chinese titles explicitl
  assert.equal(run('discoveryPapers().length'),1);
  run(`state.searchLanguage='all'`);assert.equal(run('discoveryPapers().length'),2);
 });
+test('DeepSeek preset fills protocol and models without reusing another service key',()=>{
+ run(`state.settings={provider:'api',api_preset:'openai',model:'api-old',base_url:'https://old.example/v1',api_presets:{deepseek:{name:'DeepSeek',model:'deepseek-v4-flash',base_url:'https://api.deepseek.com',protocol:'chat_completions',images:false,reasoning:true,models:['deepseek-v4-flash']}}}`);
+ node('#ai-provider').value='api';run('settingsModal()');
+ node('#api-key').value='old-service-key';node('#ai-provider').value='deepseek';node('#ai-provider').onchange();
+ assert.equal(node('#api-key').value,'');assert.equal(node('#base-url').value,'https://api.deepseek.com');
+ assert.equal(node('#api-protocol').value,'chat_completions');assert.equal(node('#model-name').value,'deepseek-v4-flash');
+ assert.equal(node('#web-search').disabled,true);assert.equal(node('#api-images').checked,false);
+ assert.ok(node('#api-capability-note').textContent.includes('视觉模型'));
+ node('#ai-provider').value='codex';node('#ai-provider').onchange();
+ assert.equal(node('#model-name').disabled,true);assert.equal(node('#web-search').disabled,false);
+});
+test('API model preferences are isolated by destination and follow DeepSeek thinking capabilities',()=>{
+ run(`state.settings={provider:'api',api_preset:'deepseek',base_url:'https://api.deepseek.com',api_protocol:'chat_completions',model:'deepseek-v4-flash'};writeChatStorage('yannian-chat-options',{[chatOptionsKey()]:{model:'deepseek-v4-pro',effort:'max'}})`);
+ assert.equal(run('chatChoices().model'),'deepseek-v4-pro');
+ assert.equal(run('chatChoices().effort'),'max');assert.equal(run(`chatChoices().efforts.includes('medium')`),false);
+ run(`state.settings={provider:'api',api_preset:'custom',base_url:'https://other.example/v1',api_protocol:'chat_completions',model:'other-model',api_capabilities:{efforts:[]}}`);
+ assert.equal(run('chatChoices().model'),'other-model');assert.equal(run('chatChoices().effort'),'');assert.equal(run('chatChoices().efforts.length'),0);
+ storedValues.delete('yannian-chat-options');
+ run(`state.settings={provider:'codex',ready:true,has_key:false,codex:{models:[]}}`);
+});
 test('discovery pagination preserves papers after the first 24 instead of truncating the search',()=>{
  run(`state.searchLanguage='english';state.searchPage=1;state.searchBusy=false;state.searchOrder='relevance';state.discover={status:'completed',papers:Array.from({length:60},(_,i)=>({title:'Medical Agent Paper '+i,url:'https://example.org/'+i,year:'2025',source:'arXiv',abstract:'Evidence',venue:'arXiv'})),sources:{},queries:['medical agents']};renderDiscover()`);
  assert.ok(node('#main-content').innerHTML.includes('当前筛选 60，总计 60'));

@@ -21,7 +21,7 @@
 - **把想法留下来**：idea 可以保存摘录、页码和选区，之后继续查相似工作、代码、数据集与验证方案。
 - **围绕研究问题整理**：同一篇论文可加入多个项目；本地相似度和 AI 语义归类提供可调整的整理建议。
 - **资料保存在本机**：文献、项目、对话与报告使用 SQLite 和本地文件保存，可导出备份。
-- **模型连接可选**：默认接入本机已登录的 Codex；也支持主动配置 OpenAI Responses API。
+- **模型连接可选**：支持本机 Codex、OpenAI、DeepSeek，以及兼容 Chat Completions / Responses 的其他服务和本地模型。
 
 ## 界面预览
 
@@ -53,7 +53,7 @@
 | 网址下载与归类 | 在“发现论文”粘贴公开 PDF 直链或论文网页，选择项目后下载保存 | 减少下载、上传、归档之间的切换，重复文件可复用 |
 | 原文 PDF 阅读 | 连续滚动、跳页、缩放；拖动分隔条调宽，独立调整阅读框位置，收起两侧栏 | 保留双栏、公式与图片的原始排版，集中阅读 |
 | 文字与图表提问 | 拖选文字，或框选图片、公式与区域后发送问题；图片以小缩略图随消息滚动 | 提问绑定具体证据，历史对话可回到原页选区 |
-| 持续 AI 对话 | Codex 回答逐步显示，可停止、回看历史、查看上下文目录；直接切换模型和思考深度 | 同一论文换选区接着聊，保留部分回答、对话记录和输入草稿 |
+| 持续 AI 对话 | Codex / Chat Completions 回答逐步显示，可停止、回看历史、查看上下文目录；直接切换模型和思考深度 | 同一论文换选区接着聊，保留部分回答、对话记录和输入草稿 |
 | 项目式文献管理 | 手动加入项目，或查看并应用相似归类建议 | 围绕研究方向积累文献，一篇论文可属于多个项目 |
 | 相似论文与阅读初筛 | 从研究关键词查找候选；深入检索整理优先阅读建议与相关性理由 | 帮助决定先读哪些论文，保留其余候选供继续筛选 |
 | idea 笔记与分析 | 随时记录想法、保存原文关联，分析类似工作、资源和验证实验 | 将阅读线索延续为可检查的研究假设 |
@@ -73,7 +73,7 @@
 
 ## 快速开始
 
-需要 **Python 3.11+** 和现代浏览器。Windows 启动流程已验证；macOS / Linux 提供手动启动方式，尚未做平台实测。Node.js 仅用于开发测试，日常运行不需要。
+需要 **Python 3.11+** 和现代浏览器。提供 Windows、macOS、Linux 启动入口；首次自动建立环境与安装依赖，以后仅在依赖清单变化时更新，并复用正在运行的服务。Node.js 仅用于开发测试，日常运行不需要。平台检查结果见 [验证记录](VERIFICATION.md)。
 
 ### Windows
 
@@ -88,6 +88,23 @@ powershell -ExecutionPolicy Bypass -File create-desktop-shortcut.ps1
 ```
 
 这会创建带 Logo 的 **“研念工作台”** 快捷方式。移动项目后需重新创建快捷方式。
+
+### macOS（Apple Silicon / Intel）
+
+1. 安装 [Python 3.11+](https://www.python.org/downloads/macos/)，解压项目到可写目录。
+2. 双击 `start.command`；首次安装依赖后自动打开研念，以后双击同一文件快速启动。
+3. 若下载解压后脚本没有执行权限，在终端进入项目目录执行一次：
+
+```bash
+chmod +x start.command start.sh
+./start.command
+```
+
+也可始终使用 `bash start.sh`。若系统拦截下载的脚本，请按 macOS 提示确认来源后打开；无需关闭系统安全设置。可将 `start.command` 的替身放在桌面。移动项目后重建替身；从 Windows 迁移时保留 `data/`，不要复制 `.venv/`。
+
+### Linux
+
+安装 Python 3.11+ 与对应的 venv / pip 组件，在项目目录执行 `bash start.sh`。调试时使用 `bash start.sh --foreground`；只启动服务使用 `bash start.sh --no-browser`。
 
 ### 手动启动
 
@@ -114,7 +131,11 @@ python3 -m venv .venv
 | 方式 | 准备 | 用量 |
 | --- | --- | --- |
 | 本机 Codex（默认） | 安装 Codex，以 ChatGPT 账户登录，在“模型设置”检测连接 | 使用该账户可用的 Codex 用量限制；无需另填 API Key |
-| OpenAI API（可选） | 在“模型设置”主动选择 API，填写 Key、可用模型与兼容 Responses API 的地址 | 使用 API 账户，单独计费 |
+| OpenAI API | 选择 OpenAI API，填写 Key 和可用模型；使用 Responses 协议 | 使用 API 账户，单独计费 |
+| DeepSeek | 选择 DeepSeek，基础地址和模型自动填入；填写 Key 后保存并测试 | 使用 DeepSeek API 账户 |
+| 其他兼容 API / 本地模型 | 填写基础地址、模型 ID 和密钥，选择 Chat Completions 或 Responses；本机免密服务可勾选不需要 Key | 按所选服务规则 |
+
+DeepSeek 预设依据 [官方 API 文档](https://api-docs.deepseek.com/) 配置，默认 `deepseek-v4-flash`；也可手动填写模型或读取账户的 `/models` 列表。框选图片需使用视觉模型；其他服务可明确配置图片和思考参数支持。DeepSeek / 通用 Chat 接口不冒充联网搜索工具：论文索引检索正常运行，额外官网核查不可用时会说明。
 
 研念通过官方 Codex App Server 与本机 Codex 通信。Codex 登录凭据由 Codex 管理；研念的论文对话由工作台保存，不会继承当前 Codex 窗口的聊天记忆。额度不足时会提示，不自动切换到 API。
 
@@ -141,11 +162,11 @@ data/
 - idea 分析是查证辅助；“没有搜到相同工作”不能证明创新性。
 - PDF 尚无 OCR、跨页连续选区或自由手绘；扫描件可用矩形框选图像提问。单文件上限 40 MB / 500 页。
 - Zotero 为本地单向导入，尚无双向同步、群组库和批注迁移。
-- 问答尚无流式输出与全文 embedding 索引，复杂排版及长论文的上下文检索仍有改进空间。
+- Codex 与 Chat Completions 支持逐步回答；Responses 目前等待完整回答。尚无全文 embedding 索引，复杂排版和长论文检索仍有改进空间。
 
 ## 技术与开发
 
-后端使用 **FastAPI + SQLite + PyMuPDF**，前端使用原生 JavaScript / CSS 和随项目提供的 **PDF.js**。模型通过本机 Codex App Server 或可选 Responses API 接入。
+后端使用 **FastAPI + SQLite + PyMuPDF**，前端使用原生 JavaScript / CSS 和随项目提供的 **PDF.js**。模型通过本机 Codex App Server、Chat Completions 或 Responses API 接入。
 
 ```text
 app/                HTTP API、存储、模型连接、检索、PDF 获取与选区
@@ -157,7 +178,7 @@ run.py              前台开发启动入口
 launch.pyw          后台启动与服务复用
 ```
 
-测试命令见 [参与开发](CONTRIBUTING.md)，已完成的验证及未覆盖项见 [验证记录](VERIFICATION.md)。后续方向包括结构化 PDF 解析、跨论文语义检索、项目级对话、流式回答与更完整的会议索引；这些是规划，尚未实现。
+测试命令见 [参与开发](CONTRIBUTING.md)，已完成的验证及未覆盖项见 [验证记录](VERIFICATION.md)。后续方向包括结构化 PDF 解析、跨论文语义检索、项目级对话与更完整的会议索引；这些是规划，尚未实现。
 
 ## 许可证
 

@@ -35,6 +35,10 @@ node tests/test_pdf_raster.mjs path/to/a/public-paper.pdf
 
 后端测试使用临时数据库、合成 PDF 与模拟的模型 / Zotero / 网络响应，不读取个人文献库，不消耗真实模型额度。前端检查使用 DOM 替身，不能替代浏览器中的实际滚动、选择、缩放和视觉验收。
 
+## 跨平台检查
+
+`.github/workflows/ci.yml` 会在 Windows、macOS ARM / Intel 与 Linux 上执行后端、前端及启动检查，使用 Python 3.11 / 3.13 和 Node.js 24。模型测试均使用模拟服务，不需要 API Key。启动器会检查首次环境准备与重复快速启动，源码打包会检查 Unix 脚本权限。
+
 ## 提交修改
 
 问题报告请写明操作步骤、预期行为、实际结果，以及系统、浏览器和 Python / Codex 版本。复现 PDF 尽量使用公开论文或最小合成文件；日志中先移除密钥和个人资料。

@@ -278,16 +278,52 @@ function importModal(attachId=null){
   if($('#arxiv-form'))$('#arxiv-form').onsubmit=e=>{e.preventDefault();busy($('button',e.target),async()=>{const result=await api('/papers/arxiv',{method:'POST',body:{arxiv:$('#arxiv-value').value,project_id:$('#import-project').value||null}});await refreshLibrary();$('#modal').close();await openPaper(result.paper.id);if(result.warning)toast(result.warning,true);});};});
 }
 function settingsModal(){
- const s=state.settings;
- const models=[...(s.codex?.models||[])];if(s.codex_model&&!models.some(m=>m.id===s.codex_model))models.push({id:s.codex_model,name:s.codex_model});
- modal('连接你的研究伙伴',`<form id="settings-form"><label class="field">连接方式<select id="ai-provider"><option value="codex" ${s.provider!=='api'?'selected':''}>本机 Codex · 使用 ChatGPT 账户额度</option><option value="api" ${s.provider==='api'?'selected':''}>OpenAI API · 单独计费</option></select></label><div id="codex-settings"><p class="subtle">由本机 Codex 处理段落问答与 idea 分析，共享你现有账户的 Codex 用量限制，无需 API Key。额度不足时会提示，不会自动切换到 API。</p><div class="notice info" id="codex-status">${esc(s.codex?.message||'点击重新检测，确认本机 Codex 登录状态。')}</div><button type="button" class="button small" id="refresh-codex">重新检测登录</button><p class="subtle">如果尚未登录，请在终端运行 <code>codex login</code>，完成 ChatGPT 登录后重新检测。连接检测不消耗模型额度；“保存并测试”会发送一条简短请求。</p><label class="field">Codex 模型<select id="codex-model"><option value="">跟随本机 Codex 默认模型</option>${models.map(m=>`<option value="${esc(m.id)}" ${s.codex_model===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select></label><label class="field">思考深度<select id="codex-effort">${[['low','快速'],['medium','标准'],['high','深入']].map(([v,t])=>`<option value="${v}" ${(s.codex_effort||'medium')===v?'selected':''}>${t}</option>`).join('')}</select><small>更深入的分析可能耗时更长，也会消耗更多账户额度。</small></label></div><div id="api-settings"><p class="subtle">通过 Responses API 调用，使用独立的 API 账户额度。</p><label class="field">API Key<input id="api-key" type="password" autocomplete="off" placeholder="${s.has_key?'已配置；留空保持当前密钥':'sk-…'}"><small>密钥仅保留在本次服务进程中，不写入浏览器存储或文献数据库。</small></label><label class="field">API 模型名称<input id="model-name" required value="${esc(s.model||'gpt-6-astra')}"></label><label class="field">API 基础地址<input id="base-url" required value="${esc(s.base_url||'https://api.openai.com/v1')}"><small>兼容服务需要支持 /responses。</small></label></div><label class="field checkbox"><input id="web-search" type="checkbox" ${s.web_search?'checked':''}> idea 分析允许联网核查论文、代码和数据集</label><p class="subtle">段落文字和勾选的页面图像会交给所选模型处理。工作台中的对话继续保存在本机，不会继承当前 Codex 窗口的聊天内容。</p><div id="settings-feedback"></div><div class="modal-footer"><button type="button" class="button" id="clear-key">清除本次密钥</button><button type="button" class="button" id="test-model">保存并测试</button><button class="button primary" type="submit">保存设置</button></div></form>`,()=>{
-  const toggle=()=>{const codex=$('#ai-provider').value==='codex';$('#codex-settings').hidden=!codex;$('#api-settings').hidden=codex;$('#clear-key').hidden=codex;};
-  $('#ai-provider').onchange=toggle;toggle();
-  const save=async()=>{state.settings=await api('/settings',{method:'PUT',body:{provider:$('#ai-provider').value,codex_model:$('#codex-model').value,codex_effort:$('#codex-effort').value,model:$('#model-name').value,base_url:$('#base-url').value,api_key:$('#api-key').value||null,web_search:$('#web-search').checked}});if($('#api-key'))$('#api-key').value='';renderSidebar();};
+ const s=state.settings,models=s.codex?.models||[],presets=s.api_presets||{};
+ const selected=s.provider==='api'?(s.api_preset==='deepseek'?'deepseek':s.api_preset==='custom'?'custom':'api'):'codex';
+ modal('连接你的研究伙伴',`<form id="settings-form">
+ <label class="field">连接方式<select id="ai-provider">${[['codex','本机 Codex · 使用 ChatGPT 账户额度'],['api','OpenAI API'],['deepseek','DeepSeek'],['custom','其他兼容 API / 本地模型']].map(([v,t])=>`<option value="${v}" ${selected===v?'selected':''}>${t}</option>`).join('')}</select></label>
+ <div id="codex-settings"><p class="subtle">由本机 Codex 处理段落问答与 idea 分析，共享你现有账户的 Codex 用量限制，无需 API Key。额度不足时会提示，不会自动切换到 API。</p><div class="notice info" id="codex-status">${esc(s.codex?.message||'点击重新检测，确认本机 Codex 登录状态。')}</div><button type="button" class="button small" id="refresh-codex">重新检测登录</button><p class="subtle">如果尚未登录，请在终端运行 <code>codex login</code>，完成 ChatGPT 登录后重新检测。连接检测不消耗模型额度；“保存并测试”会发送一条简短请求。</p>
+ <label class="field">Codex 模型<select id="codex-model"><option value="">跟随本机 Codex 默认模型</option>${models.map(m=>`<option value="${esc(m.id)}" ${s.codex_model===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select></label><label class="field">思考深度<select id="codex-effort">${[['low','快速'],['medium','标准'],['high','深入']].map(([v,t])=>`<option value="${v}" ${(s.codex_effort||'medium')===v?'selected':''}>${t}</option>`).join('')}</select></label></div>
+ <div id="api-settings"><p class="subtle">使用所选服务的 API 账户；远程 API 用量由该服务计费。</p>
+ <label class="field">API Key<input id="api-key" type="password" autocomplete="off" placeholder="${s.has_key?'已配置；留空保持当前密钥':'填写所选服务的 API Key'}"><small>仅保留在本次服务进程中。长期配置可使用本机 .env；不写入浏览器或文献数据库。</small></label>
+ <label class="field">API 基础地址<input id="base-url" required value="${esc(s.base_url||'https://api.openai.com/v1')}"><small>填写服务商提供的基础地址；不要附加 /chat/completions 或 /responses。</small></label>
+ <label class="field">接口协议<select id="api-protocol"><option value="responses" ${s.api_protocol!=='chat_completions'?'selected':''}>Responses</option><option value="chat_completions" ${s.api_protocol==='chat_completions'?'selected':''}>Chat Completions · 常用兼容接口</option></select></label>
+ <label class="field">模型 ID<input id="model-name" list="settings-api-models" required maxlength="120" value="${esc(s.model||'gpt-6-astra')}"><datalist id="settings-api-models">${(s.api_models||[]).map(m=>`<option value="${esc(m.id)}"></option>`).join('')}</datalist></label><button type="button" class="button small" id="refresh-api-models">保存并读取模型列表</button>
+ <div id="api-custom-capabilities"><label class="field checkbox"><input id="api-images" type="checkbox" ${s.api_images?'checked':''}> 模型支持图片输入</label><label class="field checkbox"><input id="api-reasoning" type="checkbox" ${s.api_reasoning?'checked':''}> 接口支持思考参数</label><label class="field checkbox"><input id="api-key-optional" type="checkbox" ${s.api_key_optional?'checked':''}> 本机模型服务不需要 API Key</label></div>
+ <p class="subtle" id="api-capability-note"></p></div>
+ <label class="field checkbox"><input id="web-search" type="checkbox" ${s.web_search?'checked':''}> idea 分析允许额外的模型联网核查</label><p class="subtle" id="web-capability-note"></p>
+ <p class="subtle">所需原文、对话和选区图像会交给所选模型处理。工作台中的对话保存在本机。</p><div id="settings-feedback"></div><div class="modal-footer"><button type="button" class="button" id="clear-key">清除本次密钥</button><button type="button" class="button" id="test-model">保存并测试</button><button class="button primary" type="submit">保存设置</button></div></form>`,()=>{
+  let previous=selected;
+  const toggle=()=>{
+   const choice=$('#ai-provider').value,codex=choice==='codex',custom=choice==='custom';
+   $('#codex-settings').hidden=!codex;$('#api-settings').hidden=codex;$('#clear-key').hidden=codex;
+   $('#api-custom-capabilities').hidden=!custom;$('#api-protocol').disabled=!custom;
+   $('#model-name').disabled=codex;$('#base-url').disabled=codex;
+   const web=codex||(choice==='api'&&$('#api-protocol').value==='responses');$('#web-search').disabled=!web;
+   $('#web-capability-note').textContent=web?'学术索引检索独立运行；额外联网会使用所选模型服务。':'此连接未启用模型联网工具。论文索引检索、英文查询扩展和候选初筛仍可使用。';
+   $('#api-capability-note').textContent=choice==='deepseek'?'默认使用快速回答；可在对话区开启思考。分析框选图片请选视觉模型（如 deepseek-v4-flash-vision-exp），普通文本模型无法看图。':custom?'按服务商文档选择协议与能力。不支持的图片不会被静默丢弃；本地免密仅限本机地址。':'原文图像和思考能力由具体模型决定，可在对话区更换模型。';
+  };
+  $('#ai-provider').onchange=()=>{
+   const choice=$('#ai-provider').value;
+   if(choice!==previous&&choice!=='codex'){
+    const preset=presets[choice==='api'?'openai':choice];
+    if(preset){$('#base-url').value=preset.base_url;$('#model-name').value=preset.model;$('#api-protocol').value=preset.protocol;$('#api-images').checked=preset.images;$('#api-reasoning').checked=preset.reasoning;$('#api-key-optional').checked=false;$('#settings-api-models').innerHTML=preset.models.map(id=>`<option value="${esc(id)}"></option>`).join('');}
+    $('#api-key').value='';$('#api-key').placeholder='切换服务后请填写对应密钥，或使用该服务的环境变量';
+   }
+   previous=choice;toggle();
+  };$('#api-protocol').onchange=toggle;toggle();
+  const save=async()=>{
+   const choice=$('#ai-provider').value,codex=choice==='codex';
+   const body={provider:codex?'codex':'api',codex_model:$('#codex-model').value,codex_effort:$('#codex-effort').value,web_search:$('#web-search').checked};
+   if(!codex)Object.assign(body,{api_preset:choice==='api'?'openai':choice,api_protocol:$('#api-protocol').value,model:$('#model-name').value,base_url:$('#base-url').value,api_key:$('#api-key').value||null,api_images:$('#api-images').checked,api_reasoning:$('#api-reasoning').checked,api_key_optional:$('#api-key-optional').checked});
+   state.settings=await api('/settings',{method:'PUT',body});$('#api-key').value='';renderSidebar();
+  };
   $('#settings-form').onsubmit=e=>{e.preventDefault();busy($('button[type=submit]',e.target),async()=>{await save();$('#modal').close();if(state.view==='reader')renderAssistant();toast('模型设置已保存');});};
-  $('#test-model').onclick=e=>busy(e.currentTarget,async()=>{await save();const r=await api('/settings/test',{method:'POST'});if($('#settings-feedback'))$('#settings-feedback').innerHTML=`<div class="notice info">${esc(r.message)} · ${esc(r.model)} · ${r.provider==='codex'?'Codex 账户额度':'API 额度'}</div>`;});
-  $('#refresh-codex').onclick=e=>busy(e.currentTarget,async()=>{const c=await api('/codex/status');state.settings.codex=c;if(state.settings.provider==='codex')state.settings.ready=c.ready;renderSidebar();if($('#codex-status'))$('#codex-status').textContent=c.message;const select=$('#codex-model');if(select&&c.models?.length){const value=select.value;select.innerHTML='<option value="">跟随本机 Codex 默认模型</option>'+c.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');select.value=value;}});
-  $('#clear-key').onclick=e=>busy(e.currentTarget,async()=>{state.settings=await api('/settings',{method:'PUT',body:{model:$('#model-name').value,base_url:$('#base-url').value,web_search:$('#web-search').checked,clear_key:true}});renderSidebar();toast(state.settings.has_key?'进程密钥已清除；环境变量密钥仍有效。':'本次密钥已清除');});});
+  $('#test-model').onclick=e=>busy(e.currentTarget,async()=>{await save();const r=await api('/settings/test',{method:'POST'});if($('#settings-feedback'))$('#settings-feedback').innerHTML=`<div class="notice info">${esc(r.message)} · ${esc(r.model)}</div>`;});
+  $('#refresh-api-models').onclick=e=>busy(e.currentTarget,async()=>{await save();const r=await api('/models');state.settings.api_models=r.models;$('#settings-api-models').innerHTML=r.models.map(m=>`<option value="${esc(m.id)}"></option>`).join('');toast('模型列表已更新，也可手动输入模型 ID');});
+  $('#refresh-codex').onclick=e=>busy(e.currentTarget,async()=>{const c=await api('/codex/status');state.settings.codex=c;if(state.settings.provider==='codex')state.settings.ready=c.ready;renderSidebar();$('#codex-status').textContent=c.message;const select=$('#codex-model');if(select&&c.models?.length){const value=select.value;select.innerHTML='<option value="">跟随本机 Codex 默认模型</option>'+c.models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');select.value=value;}});
+  $('#clear-key').onclick=e=>busy(e.currentTarget,async()=>{$('#api-key').value='';state.settings=await api('/settings',{method:'PUT',body:{clear_key:true}});renderSidebar();toast(state.settings.has_key?'进程密钥已清除；环境变量密钥仍有效。':'本次密钥已清除');});
+ });
 }
 function ideaModal({idea=null,quote='',paragraphId=null,paperId=null,selectionId=null,body=''}={}){
  let draft=null;try{draft=JSON.parse(localStorage.getItem('yannian-idea-draft')||localStorage.getItem('yanji-idea-draft')||'null');}catch{}

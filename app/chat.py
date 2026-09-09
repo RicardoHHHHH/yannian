@@ -3,6 +3,7 @@ import asyncio
 import base64
 import json
 import re
+import threading
 import time
 
 from fastapi import HTTPException
@@ -120,6 +121,13 @@ def options(body):
             selection = selections.get(body.selection_id) if body.selection_id else None
             if body.include_page or (selection and selection["kind"] == "region"):
                 raise HTTPException(400, "所选模型不支持图像，请切换模型后分析 PDF 选区。")
+    else:
+        capabilities = ai.api_providers.capabilities(config, model)
+        if effort and effort not in capabilities["efforts"]:
+            raise HTTPException(400, "当前模型或接口不支持此思考档位。")
+        selection = selections.get(body.selection_id) if body.selection_id else None
+        if not capabilities["images"] and (body.include_page or (selection and selection["kind"] == "region")):
+            raise HTTPException(400, "所选模型不支持图像，请切换视觉模型，或改为选中文字提问。")
     return config["provider"], model, effort
 
 
@@ -161,7 +169,8 @@ async def start(body):
         c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (message_id, conversation_id, "assistant", "", "[]", db.now()))
         c.execute("INSERT INTO chat_runs VALUES (?,?,?,?,?,?,?)", (run_id, conversation_id, message_id, "running", json.dumps(snapshot, ensure_ascii=False), db.now(), db.now()))
     _live[run_id] = snapshot
-    _tasks[run_id] = asyncio.create_task(execute(snapshot, body, paper, selection, context, previous, question, sources, user_sources, model))
+    connection = (ai.settings(), ai.key())  # Private, in-memory snapshot; never persisted with the run.
+    _tasks[run_id] = asyncio.create_task(execute(snapshot, body, paper, selection, context, previous, question, sources, user_sources, model, connection))
     return dict(snapshot)
 
 
@@ -178,8 +187,9 @@ def finish(snapshot, status, error=""):
     persist(snapshot)
 
 
-async def execute(snapshot, body, paper, selection, context, previous, question, sources, user_sources, model):
+async def execute(snapshot, body, paper, selection, context, previous, question, sources, user_sources, model, connection):
     loop, last_save = asyncio.get_running_loop(), [0.0]
+    loop_thread = threading.get_ident()
 
     def receive(event):
         if snapshot["status"] != "running":
@@ -190,6 +200,12 @@ async def execute(snapshot, body, paper, selection, context, previous, question,
         if time.monotonic() - last_save[0] > 1:
             persist(snapshot)
             last_save[0] = time.monotonic()
+
+    def dispatch(event):
+        if threading.get_ident() == loop_thread:
+            receive(event)
+        else:
+            loop.call_soon_threadsafe(receive, event)
 
     try:
         content = [{"type": "input_text", "text": context + "\n\n用户问题：" + question}]
@@ -205,7 +221,7 @@ async def execute(snapshot, body, paper, selection, context, previous, question,
         if snapshot["context_info"]["omitted_messages"]:
             instructions += "较早的部分历史因长度限制未附入本轮，不要虚构记忆。"
         result = await ai.respond(instructions, previous + [{"role": "user", "content": content}],
-                                  model=model, effort=snapshot["effort"], on_event=lambda event: loop.call_soon_threadsafe(receive, event))
+                                  model=model, effort=snapshot["effort"], on_event=dispatch, connection=connection)
         snapshot.update(content=result["content"], model=result.get("model") or snapshot["model"])
         used = set(re.findall(r"\[P(\d+)\]", result["content"]))
         snapshot["citations"] = result.get("citations", []) + [c for c in sources if c["label"][1:] in used] + user_sources

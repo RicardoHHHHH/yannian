@@ -5,12 +5,12 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 ROOT_FILES = (
-    '.env.example', '.gitignore', 'README.md', 'LICENSE', 'THIRD_PARTY.md',
+    '.env.example', '.gitignore', '.gitattributes', 'README.md', 'LICENSE', 'THIRD_PARTY.md',
     'VERIFICATION.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'requirements.txt',
     'requirements-dev.txt', 'run.py', 'launch.pyw', 'start.cmd', 'start.ps1',
-    'create-desktop-shortcut.ps1',
+    'create-desktop-shortcut.ps1', 'start.sh', 'start.command',
 )
-SOURCE_DIRS = ('app', 'static', 'tests', 'docs', 'scripts')
+SOURCE_DIRS = ('app', 'static', 'tests', 'docs', 'scripts', '.github/workflows')
 EXCLUDED_PARTS = {'.git', '.venv', 'venv', 'data', '__pycache__', '.pytest_cache',
                   '.cache', 'node_modules', 'dist'}
 LEGACY_ASSETS = {'yanji-logo.png', 'yanji-app.ico', 'yanji-icon-64.png'}
@@ -54,7 +54,14 @@ def package(output, root=ROOT):
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in files:
-            archive.write(path, (Path('yannian') / path.relative_to(root)).as_posix())
+            name = (Path('yannian') / path.relative_to(root)).as_posix()
+            if path.name in {'start.sh', 'start.command'}:
+                info = zipfile.ZipInfo.from_file(path, name)
+                info.create_system = 3
+                info.external_attr = 0o100755 << 16
+                archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+            else:
+                archive.write(path, name)
     with zipfile.ZipFile(output) as archive:
         if archive.testzip() is not None:
             raise RuntimeError('Archive integrity check failed.')

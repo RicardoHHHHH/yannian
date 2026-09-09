@@ -269,7 +269,13 @@ async def execute(job):
         job["pages_per_query"] = 2 if job["depth"] == "deep" else 1
         publish()
         work = [source_worker("Semantic Scholar", research.semantic_scholar), source_worker("arXiv", research.arxiv), source_worker("Crossref", research.crossref)]
-        if job["depth"] == "deep" and job["web"]: work.append(website_worker())
+        if job["depth"] == "deep" and job["web"]:
+            if ai.settings()["supports_web_search"]:
+                work.append(website_worker())
+            else:
+                job["sources"]["官网补查"] = {"status": "unavailable", "count": 0, "pages": 0, "attempts": 0,
+                                              "error": "当前 API 未提供联网搜索工具。"}
+                job["warnings"].append("当前 API 未执行额外的官网联网补查；学术索引检索、查询扩展与候选初筛仍会进行。")
         # A hard deadline marks remaining sources as incomplete, never as successfully searched.
         async with asyncio.timeout(780):
             async with asyncio.TaskGroup() as group:

@@ -5,7 +5,7 @@ import re
 from urllib.parse import urlparse
 import httpx
 from fastapi import HTTPException
-from . import db, codex_bridge
+from . import db, codex_bridge, api_providers, chat_api
 from .pdf import page_png
 from .research import similarity
 
@@ -25,23 +25,46 @@ def key():
     env_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     active_base = db.setting("base_url", env_base)
     # An environment credential is only used for its configured destination.
+    if db.setting("api_preset", "openai") == "deepseek":
+        return _session_key or (os.environ.get("DEEPSEEK_API_KEY", "") if active_base in {"https://api.deepseek.com", "https://api.deepseek.com/v1"} else "")
     return _session_key or (os.environ.get("OPENAI_API_KEY", "") if active_base == env_base else "")
 
 
 def settings():
     provider = db.setting("provider", "codex")
     codex = codex_bridge.cached_status()
-    return {"provider": provider, "ready": codex.get("ready", False) if provider == "codex" else bool(key()),
+    config = {"provider": provider, "ready": codex.get("ready", False) if provider == "codex" else bool(key()),
             "codex": codex, "codex_model": db.setting("codex_model", ""),
             "codex_effort": db.setting("codex_effort", "medium"),
             "has_key": bool(key()), "model": db.setting("model", os.environ.get("OPENAI_MODEL", "gpt-6-astra")),
             "base_url": db.setting("base_url", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
             "web_search": db.setting("web_search", True),
             "key_source": "session" if _session_key else ("environment" if key() else "none")}
+    preset = db.setting("api_preset", "openai")
+    defaults = api_providers.PRESETS[preset]
+    config.update(api_preset=preset, api_protocol=db.setting("api_protocol", defaults["protocol"]),
+                  api_images=db.setting("api_images", defaults["images"]),
+                  api_reasoning=db.setting("api_reasoning", defaults["reasoning"]),
+                  api_key_optional=db.setting("api_key_optional", False), api_presets=api_providers.PRESETS)
+    config["api_capabilities"] = api_providers.capabilities(config)
+    config["supports_web_search"] = provider == "codex" or config["api_capabilities"]["web_search"]
+    catalog = db.setting("api_model_catalog", {})
+    ids = catalog.get("models", []) if catalog.get("base_url") == config["base_url"] else defaults["models"]
+    config["api_models"] = [{"id": m, "name": m, **api_providers.capabilities(config, m)} for m in ids]
+    if provider == "api" and config["api_key_optional"] and api_providers.local_endpoint(config["base_url"]):
+        config["ready"] = True
+    return config
 
 
-def configure(model, base_url, web_search, api_key=None, clear_key=False, provider=None, codex_model=None, codex_effort=None):
+def configure(model=None, base_url=None, web_search=None, api_key=None, clear_key=False, provider=None, codex_model=None, codex_effort=None,
+              api_preset=None, api_protocol=None, api_images=None, api_reasoning=None, api_key_optional=None):
     global _session_key
+    current = settings()
+    preset = api_preset or current["api_preset"]
+    defaults = api_providers.PRESETS[preset]
+    changed_preset = preset != current["api_preset"]
+    model = model if model is not None else (defaults["model"] if changed_preset else current["model"])
+    base_url = (base_url if base_url is not None else (defaults["base_url"] if changed_preset else current["base_url"])).strip().rstrip("/")
     parsed = urlparse(base_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise HTTPException(400, "API 地址必须是有效的 HTTP(S) 基础地址。")
@@ -49,12 +72,21 @@ def configure(model, base_url, web_search, api_key=None, clear_key=False, provid
         raise HTTPException(400, "远程 API 地址必须使用 HTTPS。")
     if not model.strip():
         raise HTTPException(400, "请填写模型名称。")
-    destination_changed = base_url.rstrip("/") != settings()["base_url"].rstrip("/")
+    if base_url.endswith(("/responses", "/chat/completions", "/models")):
+        raise HTTPException(400, "请填写 API 基础地址，不要包含 /responses、/chat/completions 或 /models。")
+    if api_key_optional and not api_providers.local_endpoint(base_url):
+        raise HTTPException(400, "仅本机模型服务可选择不需要 API Key。")
+    destination_changed = base_url != current["base_url"] or changed_preset
     if clear_key or (destination_changed and not api_key):
         _session_key = ""
     elif api_key:
         _session_key = api_key.strip()
-    for k, value in (("model", model.strip()), ("base_url", base_url.rstrip("/")), ("web_search", web_search)):
+    for k, value in (("model", model.strip()), ("base_url", base_url), ("web_search", current["web_search"] if web_search is None else web_search),
+                     ("api_preset", preset),
+                     ("api_protocol", api_protocol or (defaults["protocol"] if changed_preset else current["api_protocol"])),
+                     ("api_images", api_images if api_images is not None else defaults["images"] if changed_preset else current["api_images"]),
+                     ("api_reasoning", api_reasoning if api_reasoning is not None else defaults["reasoning"] if changed_preset else current["api_reasoning"]),
+                     ("api_key_optional", api_key_optional if api_key_optional is not None else False if destination_changed else current["api_key_optional"])):
         db.save_setting(k, value)
     if provider is not None:
         db.save_setting("provider", provider)
@@ -65,14 +97,46 @@ def configure(model, base_url, web_search, api_key=None, clear_key=False, provid
     return settings()
 
 
-async def respond(instructions, messages, web=False, max_tokens=4500, model=None, effort=None, on_event=None):
-    config = settings()
+async def models():
+    config, credential = settings(), key()
+    if config["provider"] == "codex":
+        return {"models": config["codex"].get("models", [])}
+    if not config["ready"]:
+        raise HTTPException(428, "请先保存 API Key，再刷新模型列表。")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10), follow_redirects=False) as client:
+            response = await client.get(config["base_url"] + "/models", headers={"Authorization": "Bearer " + credential} if credential else {})
+        chat_api.check_response(response)
+        ids = sorted({m["id"] for m in response.json().get("data", []) if isinstance(m, dict) and isinstance(m.get("id"), str) and 0 < len(m["id"]) <= 120})[:300]
+        if not ids:
+            raise ValueError("Empty catalog")
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(502, "未能读取模型列表；仍可手动填写服务商提供的模型 ID。") from exc
+    db.save_setting("api_model_catalog", {"base_url": config["base_url"], "models": ids})
+    return {"models": settings()["api_models"]}
+
+
+async def respond(instructions, messages, web=False, max_tokens=4500, model=None, effort=None, on_event=None, connection=None):
+    config, credential = connection if connection is not None else (settings(), key())
     if config["provider"] == "codex":
         return await codex_bridge.respond(SYSTEM + "\n" + instructions, messages,
             model=config["codex_model"] if model is None else model, effort=effort or config["codex_effort"],
             web=web, max_tokens=max_tokens, **({"on_event": on_event} if on_event else {}))
-    if not key():
-        raise HTTPException(428, "请先在「模型设置」中填写 OpenAI API Key。阅读、项目和 idea 保存可以直接使用。")
+    if not config["ready"]:
+        raise HTTPException(428, "请先在「模型设置」中填写所选服务的 API Key。阅读、项目和 idea 保存可以直接使用。")
+    selected_model = model or config["model"]
+    capabilities = api_providers.capabilities(config, selected_model)
+    if any(isinstance(m.get("content"), list) and any(p.get("type") == "input_image" for p in m["content"]) for m in messages) and not capabilities["images"]:
+        raise HTTPException(400, "所选模型不支持图像，请选择视觉模型或改为选中文字提问；不会丢弃图片后假装已看图。")
+    if effort and effort not in capabilities["efforts"]:
+        raise HTTPException(400, "当前模型或接口不支持此思考档位，请使用模型默认或切换档位。")
+    if web and not capabilities["web_search"]:
+        raise HTTPException(400, "当前 API 未启用联网搜索工具；学术索引检索仍可使用。")
+    if config["api_protocol"] == "chat_completions":
+        if effort is None and config["api_preset"] == "deepseek" and selected_model.startswith("deepseek-v4-"):
+            effort = "none"
+        return await chat_api.respond(config, credential, SYSTEM + "\n" + instructions, messages,
+                                      max_tokens, selected_model, effort, on_event)
     payload = {"model": model or config["model"], "instructions": SYSTEM + "\n" + instructions,
                "input": messages, "store": False, "max_output_tokens": max_tokens}
     if effort:
@@ -83,7 +147,7 @@ async def respond(instructions, messages, web=False, max_tokens=4500, model=None
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(240, connect=20)) as client:
             res = await client.post(config["base_url"] + "/responses", json=payload,
-                                    headers={"Authorization": "Bearer " + key()})
+                                    headers={"Authorization": "Bearer " + credential} if credential else {})
         if res.is_error:
             code = ""
             try:

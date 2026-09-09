@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.8.0 · 2026-09-09
+
+- 新增 macOS 双击 `start.command` 和 Linux `start.sh`；跨平台共用安装与快速启动逻辑，按依赖指纹更新，重复启动复用服务。源码 ZIP 保留 Unix 脚本执行权限。
+- 新增 DeepSeek 预设、通用 Chat Completions 和本机免密模型配置，保留 Codex 与 Responses；支持读取模型列表、自定义模型、明确图片与思考能力。
+- Chat Completions 流式展示正文，可停止并保留部分回答；思考过程只显示状态，切换连接不改变已发出的问题。
+- 不支持模型联网工具的连接仍可进行学术索引检索与候选分析，额外网页核查会明确标记不可用。
+- 增加 Windows、Apple Silicon Mac、Intel Mac、Linux 的 GitHub Actions 检查，以及适配器、凭据隔离、流式中断和启动回归。
+
+
 ## 0.7.5 · 2026-09-09
 
 - PDF 阅读默认至少 4 倍采样，高像素密度屏幕按更高密度渲染，保留原始 PDF；放大时重新绘制文字与矢量图。

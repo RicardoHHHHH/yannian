@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 if __name__ == "__main__":
+    os.chdir(ROOT)
     parser = argparse.ArgumentParser(description="研念 / Yannian Workbench")
     parser.add_argument("--port", type=int, default=int(os.environ.get("YANNIAN_PORT", os.environ.get("YANJI_PORT", "8765"))))
     parser.add_argument("--no-browser", action="store_true")

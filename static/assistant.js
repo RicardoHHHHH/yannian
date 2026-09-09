@@ -7,25 +7,27 @@ function writeChatStorage(key,value){try{localStorage.setItem(key,JSON.stringify
 function chatKey(){return (state.paper?.id||'')+':'+(state.conversationId||'new');}
 function saveChatDraft(value){const drafts=readChatStorage('yannian-chat-drafts');drafts[chatKey()]=value.slice(0,12000);writeChatStorage('yannian-chat-drafts',drafts);}
 function rememberConversation(){const saved=readChatStorage('yannian-last-chat');saved[state.paper.id]=state.conversationId;writeChatStorage('yannian-last-chat',saved);}
+function chatOptionsKey(){const s=state.settings;return s.provider==='api'?JSON.stringify(['api',s.base_url,s.api_protocol,s.model]):'codex';}
 function chatChoices(){
- const provider=state.settings.provider||'codex',saved=readChatStorage('yannian-chat-options')[provider]||{};
- const models=state.settings.codex?.models||[];
+ const provider=state.settings.provider||'codex',saved=readChatStorage('yannian-chat-options')[chatOptionsKey()]||{};
+ const models=provider==='codex'?state.settings.codex?.models||[]:state.settings.api_models||[];
  let model=saved.model??(provider==='codex'?state.settings.codex_model||'':state.settings.model||'');
  if(provider==='codex'&&model&&models.length&&!models.some(m=>m.id===model))model='';
  const selected=models.find(m=>model?m.id===model:m.is_default);
- const efforts=provider==='codex'?(selected?.efforts?.length?selected.efforts:['low','medium','high']):Object.keys(effortNames);
- let effort=saved.effort??(provider==='codex'?state.settings.codex_effort||'medium':'');
- if(effort&&!efforts.includes(effort))effort=selected?.default_effort||efforts[0];
+ const deepseek=provider==='api'&&state.settings.api_preset==='deepseek';
+ const efforts=provider==='codex'?(selected?.efforts?.length?selected.efforts:['low','medium','high']):deepseek?(model.startsWith('deepseek-v4-')?['none','low','high','max']:[]):selected?.efforts||state.settings.api_capabilities?.efforts||[];
+ let effort=saved.effort??(provider==='codex'?state.settings.codex_effort||'medium':deepseek&&model.startsWith('deepseek-v4-')?'none':'');
+ if(effort&&!efforts.includes(effort))effort=provider==='codex'?selected?.default_effort||efforts[0]:'';
  return {provider,models,model,effort,efforts};
 }
 function saveChatChoices(){
- const provider=state.settings.provider||'codex',saved=readChatStorage('yannian-chat-options');
- saved[provider]={model:$('#chat-model').value.trim(),effort:$('#chat-effort').value};
+ const saved=readChatStorage('yannian-chat-options');
+ saved[chatOptionsKey()]={model:$('#chat-model').value.trim(),effort:$('#chat-effort').value};
  writeChatStorage('yannian-chat-options',saved);renderAssistant();
 }
 function chatControls(){
  const {provider,models,model,effort,efforts}=chatChoices();
- const modelInput=provider==='codex'?`<select id="chat-model" aria-label="对话模型"><option value="">Codex 默认模型</option>${models.map(m=>`<option value="${esc(m.id)}" ${model===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}${model&&!models.some(m=>m.id===model)?`<option selected value="${esc(model)}">${esc(model)}</option>`:''}</select>`:`<input id="chat-model" aria-label="对话模型" value="${esc(model)}" maxlength="120" placeholder="API 模型名称">`;
+ const modelInput=provider==='codex'?`<select id="chat-model" aria-label="对话模型"><option value="">Codex 默认模型</option>${models.map(m=>`<option value="${esc(m.id)}" ${model===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}${model&&!models.some(m=>m.id===model)?`<option selected value="${esc(model)}">${esc(model)}</option>`:''}</select>`:`<input id="chat-model" aria-label="对话模型" list="chat-api-models" value="${esc(model)}" maxlength="120" placeholder="API 模型名称"><datalist id="chat-api-models">${models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}</datalist>`;
  return `<div class="chat-controls"><label>模型${modelInput}</label><label>思考深度<select id="chat-effort" aria-label="思考深度">${provider==='api'?'<option value="">模型默认</option>':''}${efforts.map(e=>`<option value="${esc(e)}" ${effort===e?'selected':''}>${esc(effortNames[e]||e)}</option>`).join('')}</select></label><button class="icon-button" id="refresh-chat-models" title="刷新可用模型" aria-label="刷新可用模型">↻</button></div>`;
 }
 function selectionId(selection){return selection?.selection_id||selection?.id;}
@@ -68,7 +70,7 @@ function renderAssistant({bottom=false}={}){
  $('#chat-question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendChat();}};
  if(state.chatBusy)$('#stop-chat').onclick=stopChat;else $('#send-chat').onclick=sendChat;
  $('#chat-model').onchange=saveChatChoices;$('#chat-effort').onchange=saveChatChoices;
- $('#refresh-chat-models').onclick=e=>busy(e.currentTarget,async()=>{if(state.settings.provider==='codex')await api('/codex/status',{method:'GET'});state.settings=await api('/settings');renderAssistant();toast('模型列表已更新');});
+ $('#refresh-chat-models').onclick=e=>busy(e.currentTarget,async()=>{if(state.settings.provider==='codex')await api('/codex/status',{method:'GET'});else await api('/models');state.settings=await api('/settings');renderAssistant();toast('模型列表已更新');});
  const scroll=$('#messages');scroll.scrollTop=follow?scroll.scrollHeight:position;
  scroll.onscroll=()=>{$('#chat-to-bottom').hidden=scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<70;};
  $('#chat-to-bottom').onclick=()=>{scroll.scrollTop=scroll.scrollHeight;$('#chat-to-bottom').hidden=true;};

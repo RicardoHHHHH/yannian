@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = Path(os.environ.get("YANNIAN_DATA_DIR", os.environ.get("YANJI_DATA_DIR", ROOT / "data"))).resolve()
+DATA = Path(os.environ.get("YANNIAN_DATA_DIR", os.environ.get("YANJI_DATA_DIR", ROOT / "data"))).expanduser().resolve()
 
 
 def uid():
