@@ -38,7 +38,7 @@ async def lifespan(app):
         await discovery.shutdown()
 
 
-app = FastAPI(title="研念 · Yannian Workbench", version="0.7.4", lifespan=lifespan)
+app = FastAPI(title="研念 · Yannian Workbench", version="0.7.5", lifespan=lifespan)
 PDF_FETCHING = set()
 URL_FETCHING = set()
 PDF_IMPORT_PROGRESS = {}
@@ -221,7 +221,7 @@ class AnalyzeBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.7.4", "app": "yannian-workbench"}
+    return {"ok": True, "version": "0.7.5", "app": "yannian-workbench"}
 
 
 @app.get("/api/settings")

@@ -1,12 +1,21 @@
 export const PAGE_GAP = 28;
 export const PAGE_PADDING = 16;
 
-// Supersample small text, honor high-DPI screens, and bound each canvas allocation.
-export function canvasSize(width, height, deviceRatio=1) {
-  const ratio=Number.isFinite(deviceRatio)&&deviceRatio>0?deviceRatio:1;
-  const scale=Math.min(Math.max(2,ratio),Math.sqrt(20_000_000/(width*height)),8192/width,8192/height);
-  const pixelsWide=Math.max(1,Math.floor(width*scale)),pixelsHigh=Math.max(1,Math.floor(height*scale));
-  return {width:pixelsWide,height:pixelsHigh,scaleX:pixelsWide/width,scaleY:pixelsHigh/height};
+export const TILE_PIXELS = 2048;
+
+// Keep the same sampling quality at every zoom; limit allocations by visible tiles.
+export function rasterTiles(width, height, deviceRatio=1, view={left:0,top:0,right:width,bottom:height}) {
+  const scale=Math.max(4,Number.isFinite(deviceRatio)&&deviceRatio>0?deviceRatio:1);
+  const fullWidth=Math.ceil(width*scale),fullHeight=Math.ceil(height*scale);
+  const left=Math.max(0,view.left),top=Math.max(0,view.top),right=Math.min(width,view.right),bottom=Math.min(height,view.bottom);
+  if(right<=left||bottom<=top)return [];
+  const tiles=[];
+  for(let y=Math.floor(top*scale/TILE_PIXELS)*TILE_PIXELS;y<Math.ceil(bottom*scale);y+=TILE_PIXELS){
+    for(let x=Math.floor(left*scale/TILE_PIXELS)*TILE_PIXELS;x<Math.ceil(right*scale);x+=TILE_PIXELS){
+      tiles.push({key:x+':'+y,x,y,width:Math.min(TILE_PIXELS,fullWidth-x),height:Math.min(TILE_PIXELS,fullHeight-y),scale});
+    }
+  }
+  return tiles;
 }
 
 export function layoutPages(sizes, zoom, availableWidth) {

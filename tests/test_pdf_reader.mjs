@@ -9,6 +9,7 @@ class Element {
   constructor(tag='div') {this.tag=tag;this.children=[];this.style={setProperty(){}};this.dataset={};this.listeners={};this.scrollTop=0;this.scrollLeft=0;this.clientHeight=600;this.isConnected=true;}
   append(...children){for(const child of children){child.parentElement=this;this.children.push(child);}}
   replaceChildren(...children){for(const child of this.children)child.parentElement=null;this.children=[];this.append(...children);}
+  remove(){if(this.parentElement){this.parentElement.children=this.parentElement.children.filter(c=>c!==this);this.parentElement=null;}}
   setAttribute(){}
   addEventListener(type,fn,options){this.listeners[type]=fn;options?.signal?.addEventListener('abort',()=>delete this.listeners[type]);}
   get clientWidth(){return parseFloat(this.style.width)||632;}
@@ -23,7 +24,7 @@ const host=new Element(),scroll=new Element(),status=new Element();
 host.querySelector=selector=>selector==='.pdf-scroll'?scroll:status;
 let nativeSelection={isCollapsed:true,removeAllRanges(){this.isCollapsed=true;}};
 const frames=new Map();let frameId=0,documentCount=0,cancelled=0;
-const changes=[],selections=[],errors=[];
+const changes=[],selections=[],errors=[],renders=[];
 const windowEvents=new Element();
 const delayed=[];
 let delayRenders=false,failPage=null;
@@ -35,7 +36,8 @@ const context=vm.createContext({
   ResizeObserver:class{observe(){}disconnect(){}},GlobalWorkerOptions:{},
   getDocument(){documentCount++;return {destroy:async()=>{},promise:Promise.resolve({numPages:25,getPage:async number=>({
     getViewport:({scale})=>({width:600*scale,height:800*scale,scale}),
-    render(){
+    render(args){
+      renders.push({...args,number});
       let resolve,reject;
       const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});
       if(number===failPage)reject(new Error('Test page failure'));
@@ -54,14 +56,16 @@ const options={host,paperId:'fixture',pageNumber:1,pageSizes:Array.from({length:
 async function flush(){for(let i=0;i<12;i++){const callbacks=[...frames.values()];frames.clear();callbacks.forEach(fn=>fn());await new Promise(resolve=>setImmediate(resolve));}}
 const slots=()=>scroll.children[0].children;
 const frame=n=>slots()[n-1].children[0];
-const canvasCount=()=>slots().filter(slot=>slot.children[0].children.some(child=>child.tag==='canvas')).length;
-const find=(n,cls)=>frame(n).children.find(child=>child.className===cls);
+const descendants=element=>element.children.flatMap(child=>[child,...descendants(child)]);
+const canvasCount=()=>slots().filter(slot=>descendants(slot).some(child=>child.tag==='canvas')).length;
+const find=(n,cls)=>descendants(frame(n)).find(child=>child.className===cls);
 
 await reader.mount(options);await flush();
 assert.equal(slots().length,25,'All page slots must exist to support continuous scrolling.');
 assert.ok(canvasCount()>0&&canvasCount()<5,'Only nearby pages need canvases.');
 const firstCanvas=find(1,'pdf-canvas'),originalList=scroll.children[0];
-assert.equal(firstCanvas.width,1200,'Standard-density displays still get a 2x text canvas.');
+assert.equal(firstCanvas.width/parseFloat(firstCanvas.style.width),4,'Standard-density displays get 4x sampling.');
+assert.ok(renders.every(r=>r.transform[0]===4&&r.transform[3]===4));
 const pages=layout.layoutPages(options.pageSizes,'fit',600);
 scroll.scrollTop=pages[1].top+200;scroll.listeners.scroll();await flush();
 assert.equal(changes.at(-1),2);assert.ok(find(2,'pdf-canvas'));
@@ -124,10 +128,23 @@ failPage=8;reader.goToPage(8);await flush();
 assert.equal(errors.length,1);assert.equal(frame(8).children[0].className,'pdf-page-error');
 failPage=null;frame(8).children[0].children[0].onclick();await flush();assert.ok(find(8,'pdf-canvas'));
 const lowDensityCanvas=find(8,'pdf-canvas'),densityPosition=scroll.scrollTop;
-context.window.devicePixelRatio=3;windowEvents.listeners.resize();await flush();
+context.window.devicePixelRatio=6;windowEvents.listeners.resize();await flush();
 assert.equal(lowDensityCanvas.width,0,'A pixel-density change must release the old-resolution canvas.');
-assert.equal(find(8,'pdf-canvas').width,frame(8).getBoundingClientRect().width*3);
+assert.equal(find(8,'pdf-canvas').width/parseFloat(find(8,'pdf-canvas').style.width),6);
 assert.equal(scroll.scrollTop,densityPosition);assert.equal(documentCount,1);
+context.window.devicePixelRatio=1;
+await reader.mount({...options,pageNumber:8,zoom:'4'});await flush();
+scroll.scrollLeft=0;scroll.listeners.scroll();await flush();
+const leftTile=find(8,'pdf-canvas');
+assert.equal(leftTile.width/parseFloat(leftTile.style.width),4);
+assert.ok(descendants(frame(8)).filter(e=>e.tag==='canvas').length<=9);
+scroll.scrollLeft=2000;scroll.listeners.scroll();await flush();
+assert.equal(leftTile.width,0,'Horizontal scrolling releases tiles outside the visible window.');
+const rightTile=find(8,'pdf-canvas');
+assert.equal(rightTile.width/parseFloat(rightTile.style.width),4,'400% zoom never lowers resolution.');
+assert.ok(parseFloat(rightTile.style.left)>0);
+assert.ok(renders.some(r=>r.canvas===rightTile&&r.transform[4]===-parseFloat(rightTile.style.left)*4&&r.transform[5]===-parseFloat(rightTile.style.top)*4),'Tile transforms retain full-page coordinates.');
 reader.clear();assert.equal(scroll.listeners.scroll,undefined);assert.equal(canvasCount(),0);
+assert.equal(rightTile.width,0);
 assert.equal(windowEvents.listeners.resize,undefined);
 console.log('PDF reader lifecycle: 25 continuous pages, lazy eviction, page tracking, tool/zoom position, page-bound selections, jump/return, cancellation, retry and cleanup passed (DOM/PDF stubs, no browser).');

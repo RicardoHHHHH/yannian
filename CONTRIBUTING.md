@@ -25,6 +25,14 @@ node tests/test_pdf_layout.mjs
 node tests/test_pdf_reader.mjs
 ```
 
+可选的实际 PDF 渲染回归需要在独立测试环境安装 `@napi-rs/canvas`，让 Node.js 能解析此模块后执行：
+
+```powershell
+node tests/test_pdf_raster.mjs path/to/a/public-paper.pdf
+```
+
+该检查离线比较整页与分块的高分辨率像素结果；不要将论文文件加入源码仓库。
+
 后端测试使用临时数据库、合成 PDF 与模拟的模型 / Zotero / 网络响应，不读取个人文献库，不消耗真实模型额度。前端检查使用 DOM 替身，不能替代浏览器中的实际滚动、选择、缩放和视觉验收。
 
 ## 提交修改

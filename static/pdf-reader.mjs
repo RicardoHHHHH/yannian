@@ -1,6 +1,6 @@
 import {getDocument, GlobalWorkerOptions, TextLayer} from './vendor/pdfjs/legacy/build/pdf.mjs';
 import {normalizedRect, dragRect, boxStyle} from './pdf-geometry.mjs';
-import {layoutPages, nearbyPages, readingPage, capturePosition, restorePosition, canvasSize, PAGE_PADDING} from './pdf-layout.mjs';
+import {layoutPages, nearbyPages, readingPage, capturePosition, restorePosition, rasterTiles, PAGE_PADDING} from './pdf-layout.mjs';
 
 GlobalWorkerOptions.workerSrc = new URL('./vendor/pdfjs/legacy/build/pdf.worker.mjs', import.meta.url).href;
 const assets = new URL('./vendor/pdfjs/', import.meta.url).href;
@@ -21,10 +21,11 @@ function selectedOn(session, row) {
 function disposeRow(row) {
   row.cancelDrag?.();row.cancelDrag=null;
   ++row.token;row.frame.onmouseup=null;
-  row.renderTask?.cancel();row.textLayer?.cancel();
-  if(row.canvas){row.canvas.width=0;row.canvas.height=0;}
+  row.textLayer?.cancel();
+  for(const tile of row.tiles?.values()||[])disposeTile(tile);
+  row.tiles=null;row.raster=null;row.viewport=null;
   if(row.state==='ready')row.pdfPage?.cleanup();
-  row.renderTask=null;row.textLayer=null;row.canvas=null;row.marks=null;row.region=null;row.pdfPage=null;
+  row.textLayer=null;row.marks=null;row.region=null;row.pdfPage=null;
   row.state='idle';row.dragging=false;row.frame.replaceChildren();
 }
 
@@ -37,6 +38,53 @@ function stopRender() {
 }
 
 function valid(session) { return Boolean(session && session===active && session.alive && session.host.isConnected); }
+
+function disposeTile(tile){
+  tile.task?.cancel();tile.canvas.width=0;tile.canvas.height=0;tile.canvas.remove();
+}
+function failRow(session,row,error){
+  disposeRow(row);row.state='error';
+  const message=document.createElement('div');message.className='pdf-page-error';message.textContent='第 '+row.number+' 页加载失败：'+error.message;
+  const retry=document.createElement('button');retry.className='button';retry.textContent='重新加载';
+  retry.onclick=()=>{disposeRow(row);sync(session);};message.append(retry);row.frame.replaceChildren(message);
+  statusText(session);session.onError?.(error);
+}
+function syncTiles(session,row){
+  if(!row.raster||!row.viewport)return;
+  const pageLeft=PAGE_PADDING+(session.list.clientWidth-row.layout.width)/2,padding=160;
+  const view={left:session.scroll.scrollLeft-pageLeft-padding,top:session.scroll.scrollTop-row.layout.top-padding,
+    right:session.scroll.scrollLeft+session.scroll.clientWidth-pageLeft+padding,
+    bottom:session.scroll.scrollTop+session.scroll.clientHeight-row.layout.top+padding};
+  const tiles=rasterTiles(row.viewport.width,row.viewport.height,session.pixelRatio,view),wanted=new Set(tiles.map(t=>t.key));
+  for(const [key,tile] of row.tiles){if(!wanted.has(key)){disposeTile(tile);row.tiles.delete(key);}}
+  for(const tile of tiles){
+    if(row.tiles.has(tile.key))continue;
+    const canvas=document.createElement('canvas');canvas.className='pdf-canvas';canvas.setAttribute('aria-hidden','true');
+    canvas.width=tile.width;canvas.height=tile.height;
+    Object.assign(canvas.style,{left:tile.x/tile.scale+'px',top:tile.y/tile.scale+'px',width:tile.width/tile.scale+'px',height:tile.height/tile.scale+'px'});
+    row.raster.append(canvas);row.tiles.set(tile.key,{...tile,canvas,state:'idle',task:null});
+  }
+}
+async function renderTile(session,row,tile){
+  const token=row.token,current=()=>valid(session)&&row.token===token&&row.tiles?.get(tile.key)===tile;
+  tile.state='loading';
+  try{
+    tile.task=row.pdfPage.render({canvas:tile.canvas,canvasContext:tile.canvas.getContext('2d'),viewport:row.viewport,
+      transform:[tile.scale,0,0,tile.scale,-tile.x,-tile.y]});
+    await tile.task.promise;
+    if(current())tile.state='ready';
+  }catch(error){if(current()&&error.name!=='RenderingCancelledException')failRow(session,row,error);}
+  finally{--session.tileLoading;pumpTiles(session);}
+}
+function pumpTiles(session){
+  if(!valid(session))return;
+  while(session.tileLoading<2){
+    const candidates=session.rows.flatMap(row=>[...(row.tiles?.values()||[])].filter(tile=>tile.state==='idle').map(tile=>({row,tile})));
+    candidates.sort((a,b)=>Math.abs(a.row.number-session.pageNumber)-Math.abs(b.row.number-session.pageNumber)||a.tile.y-b.tile.y||a.tile.x-b.tile.x);
+    const next=candidates[0];if(!next)break;
+    ++session.tileLoading;renderTile(session,next.row,next.tile);
+  }
+}
 
 function statusText(session) {
   const row=session.rows[session.pageNumber-1];
@@ -112,21 +160,14 @@ async function renderRow(session,row) {
       session.sizes[row.number-1]=[base.width,base.height];relayout(session);return;
     }
     row.pdfPage=page;
-    const viewport=page.getViewport({scale:row.layout.width/base.width});
+    const viewport=page.getViewport({scale:row.layout.width/base.width});row.viewport=viewport;
     row.frame.style.setProperty('--total-scale-factor',String(viewport.scale*(viewport.userUnit||1)));
     row.frame.style.setProperty('--scale-factor',String(viewport.scale));
-    const canvas=document.createElement('canvas');canvas.className='pdf-canvas';canvas.setAttribute('aria-label','PDF 原文第 '+row.number+' 页');
-    const raster=canvasSize(viewport.width,viewport.height,session.pixelRatio);
-    canvas.width=raster.width;canvas.height=raster.height;
-    canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';row.canvas=canvas;
+    const raster=document.createElement('div');raster.className='pdf-raster';row.raster=raster;row.tiles=new Map();
     const text=document.createElement('div');text.className='textLayer';
     const marks=document.createElement('div');marks.className='pdf-marks';row.marks=marks;
     const region=document.createElement('div');region.className='pdf-region-tool';region.hidden=session.tool!=='region';row.region=region;
-    row.frame.replaceChildren(canvas,text,marks,region);
-    row.renderTask=page.render({canvas,canvasContext:canvas.getContext('2d'),viewport,
-      transform:[raster.scaleX,0,0,raster.scaleY,0,0]});
-    await row.renderTask.promise;
-    if(!current())return;
+    row.frame.replaceChildren(raster,text,marks,region);syncTiles(session,row);pumpTiles(session);
     const textContent=await page.getTextContent();
     if(!current())return;
     const layer=new TextLayer({textContentSource:textContent,container:text,viewport});row.textLayer=layer;
@@ -137,11 +178,7 @@ async function renderRow(session,row) {
     bindSelection(session,row,text,marks,region);statusText(session);
   } catch(error) {
     if(!current()||error.name==='RenderingCancelledException')return;
-    row.state='error';
-    const message=document.createElement('div');message.className='pdf-page-error';message.textContent='第 '+row.number+' 页加载失败：'+error.message;
-    const retry=document.createElement('button');retry.className='button';retry.textContent='重新加载';
-    retry.onclick=()=>{disposeRow(row);sync(session);};message.append(retry);row.frame.replaceChildren(message);
-    statusText(session);session.onError?.(error);
+    failRow(session,row,error);
   }
 }
 
@@ -165,8 +202,9 @@ function sync(session) {
     // Preserve the text layer beneath an active drag or native text selection.
     row.wanted=wanted.has(row.number)||row.dragging||Boolean(nativeSelection&&!nativeSelection.isCollapsed&&row.frame.contains(nativeSelection.anchorNode));
     if(!row.wanted&&row.state!=='idle')disposeRow(row);
+    else if(row.wanted)syncTiles(session,row);
   }
-  pump(session);
+  pump(session);pumpTiles(session);
 }
 
 function schedule(session) {
@@ -239,7 +277,7 @@ async function mount(options) {
   stopRender();
   const session={host,paperId,pageNumber,zoom,tool,selection,onSelection,onPageChange,onScroll,onError,
     status:host.querySelector('.pdf-load-status'),scroll:host.querySelector('.pdf-scroll'),
-    rows:[],layouts:[],sizes:[],loading:0,tick:0,alive:true,events:new AbortController(),pageCount:pageSizes.length,
+    rows:[],layouts:[],sizes:[],loading:0,tileLoading:0,tick:0,alive:true,events:new AbortController(),pageCount:pageSizes.length,
     pendingRects:selection?.page===pageNumber?selection.rects:null};
   active=session;session.status.textContent='正在加载连续 PDF 阅读器…';
   try {

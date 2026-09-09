@@ -1,15 +1,24 @@
 import assert from 'node:assert/strict';
-import {layoutPages,nearbyPages,readingPage,capturePosition,restorePosition,canvasSize,PAGE_GAP} from '../static/pdf-layout.mjs';
+import {layoutPages,nearbyPages,readingPage,capturePosition,restorePosition,rasterTiles,TILE_PIXELS,PAGE_GAP} from '../static/pdf-layout.mjs';
 
-assert.deepEqual(canvasSize(600,800,1),{width:1200,height:1600,scaleX:2,scaleY:2});
-assert.deepEqual(canvasSize(600,800,3),{width:1800,height:2400,scaleX:3,scaleY:3});
-assert.deepEqual(canvasSize(600,800,NaN),canvasSize(600,800,1));
-for(const [w,h,dpr] of [[1600,2200,3],[12000,18000,4],[100,30000,3],[30000,100,3]]){
- const pixels=canvasSize(w,h,dpr);
- assert.ok(pixels.width*pixels.height<=20_000_000);
- assert.ok(pixels.width<=8192&&pixels.height<=8192);
- assert.equal(pixels.scaleX,pixels.width/w);assert.equal(pixels.scaleY,pixels.height/h);
+for(const dpr of [1,3,4,6,NaN]){
+ const width=600.37,height=800.19,tiles=rasterTiles(width,height,dpr),scale=dpr===6?6:4;
+ assert.ok(tiles.every(t=>t.scale===scale&&t.width<=TILE_PIXELS&&t.height<=TILE_PIXELS));
+ assert.ok(tiles.every(t=>t.x%TILE_PIXELS===0&&t.y%TILE_PIXELS===0));
+ assert.equal(new Set(tiles.map(t=>t.key)).size,tiles.length);
+ assert.equal(tiles.reduce((sum,t)=>sum+t.width*t.height,0),Math.ceil(width*scale)*Math.ceil(height*scale),'Tiles cover all source pixels exactly once.');
+ assert.equal(Math.max(...tiles.map(t=>t.x+t.width)),Math.ceil(width*scale));
+ assert.equal(Math.max(...tiles.map(t=>t.y+t.height)),Math.ceil(height*scale));
 }
+const view={left:8000,top:14000,right:9200,bottom:14800};
+const large=rasterTiles(12000,18000,4,view);
+assert.ok(large.length<=12,'A huge page only allocates the visible region.');
+assert.ok(large.every(t=>t.scale===4),'Page size must never reduce sampling quality.');
+assert.ok(large.every(t=>t.x+t.width>view.left*4&&t.x<view.right*4&&t.y+t.height>view.top*4&&t.y<view.bottom*4));
+const elsewhere=rasterTiles(12000,18000,4,{left:0,top:0,right:1200,bottom:800});
+assert.ok(elsewhere.every(t=>!large.some(old=>old.key===t.key)));
+assert.deepEqual(rasterTiles(600,800,1,{left:-900,top:0,right:-1,bottom:800}),[]);
+assert.deepEqual(rasterTiles(600,800,1,{left:0,top:900,right:600,bottom:1000}),[]);
 
 const sizes=Array.from({length:500},()=>[600,800]);
 const pages=layoutPages(sizes,'fit',600);
@@ -25,7 +34,7 @@ for(const page of pages){
 }
 const position=capturePosition(pages,pages[79].top+pages[79].height*.65);
 assert.equal(position.page,80);assert.ok(Math.abs(position.fraction-.65)<1e-10);
-for(const zoom of ['fit','1','1.25','1.5','2']){
+for(const zoom of ['fit','1','1.25','1.5','2','3','4']){
   const resized=layoutPages(sizes,zoom,420);
   const top=restorePosition(resized,position);
   const restored=capturePosition(resized,top);
@@ -36,4 +45,4 @@ assert.deepEqual(mixed.map(p=>p.height),[800,450,1800]);
 assert.equal(mixed[2].top,mixed[1].bottom+PAGE_GAP);
 assert.ok(nearbyPages(mixed,mixed[1].bottom-20,600).includes(3));
 assert.equal(readingPage(layoutPages([[600,800]],'fit',600),0,600),1);
-console.log('PDF layout: continuous page boundaries, 500-page lazy window, mixed sizes, current page and zoom/resize anchors passed.');
+console.log('PDF layout: 4x/6x tiles, exact coverage, bounded visible regions without downsampling, 500-page window, mixed sizes and zoom/resize anchors passed.');
