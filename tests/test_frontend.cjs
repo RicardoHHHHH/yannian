@@ -389,4 +389,35 @@ async function checkPDFEscape(){
  assert.equal(run('state.messages.length'),1);
  passed++;console.log('PASS a selection save finishing after Escape cannot reopen the attachment or replace the draft');
 }
-checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(checkAttachmentLifecycle).then(checkPDFEscape).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});
+async function checkReadingEvidence(){
+ run(`state.settings={provider:'codex',ready:true,codex_model:'',codex_effort:'low',supports_web_search:true,codex:{models:[{id:'model-a',name:'A',is_default:true,efforts:['low']}]}};
+ writeChatStorage('yannian-chat-options',{});state.chatBusy=false;state.chatRun=null;state.messages=[];state.pdfSelection=null;state.conversationId=null;state.view='reader';renderAssistant();saveChatDraft('Keep next question');`);
+ assert.equal(run('chatChoices().webMode'),'auto');assert.equal(run('chatChoices().paperScope'),'full');
+ assert.ok(node('#assistant-panel').innerHTML.includes('id="chat-web-mode"'));
+ assert.ok(node('#assistant-panel').innerHTML.includes('整篇论文'));
+ node('#chat-model').value='';node('#chat-effort').value='low';node('#chat-web-mode').value='off';node('#chat-paper-scope').value='focused';
+ node('#chat-web-mode').onchange();
+ assert.equal(run('chatChoices().webMode'),'off');assert.equal(run('chatChoices().paperScope'),'focused');
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Keep next question');
+ passed++;console.log('PASS default full-document/auto-search controls persist explicit preferences without losing drafts');
+ node('#chat-question').value='联网搜寻细节';node('#include-page').checked=false;
+ run(`api=async(path,options={})=>{if(path==='/chat/runs'){window.evidencePayload=options.body;return {id:'evidence-run',message_id:'evidence-answer',paper_id:state.paper.id,conversation_id:'evidence-chat',status:'completed',content:'Answer',citations:[]};}return state.chatRun;};`);
+ await run('sendChat()');
+ assert.equal(run('window.evidencePayload.web_mode'),'off');assert.equal(run('window.evidencePayload.paper_scope'),'focused');
+ run(`window.evidence={document:{full_text:true,included_blocks:267,total_blocks:267,included_pages:Array.from({length:12},(_,i)=>i+1),total_pages:12,total_chars:46943,included_chars:46943},network:{status:'searched',searched:true}};state.messages=[{role:'assistant',content:'Answer',context_info:window.evidence}];renderChatMessages();chatContextModal();`);
+ assert.ok(node('#messages').innerHTML.includes('全文文本 267/267 段'));
+ assert.ok(node('#messages').innerHTML.includes('已调用联网工具'));
+ assert.ok(node('#modal-content').innerHTML.includes('12 / 12 页'));
+ run(`window.evidence.document.full_text=false;window.evidence.network={status:'not_observed',searched:false}`);
+ assert.ok(run('chatEvidenceLabel(window.evidence)').includes('部分原文'));
+ assert.ok(run('chatEvidenceLabel(window.evidence)').includes('未检测到联网记录'));
+ passed++;console.log('PASS request carries explicit scope/network and messages/context dialog display measured evidence coverage');
+ run(`state.settings.supports_web_search=false;state.chatBusy=false;renderAssistant();api=async()=>{throw new Error('当前模型接口没有联网工具')};`);
+ assert.ok(node('#assistant-panel').innerHTML.includes('当前接口无联网工具'));
+ node('#chat-question').value='Please search online';const count=run('state.messages.length');
+ await run('sendChat()');
+ assert.equal(run('state.messages.length'),count);
+ assert.equal(run(`readChatStorage('yannian-chat-drafts')[chatKey()]`),'Please search online');
+ passed++;console.log('PASS unsupported-network requests retain the question instead of silently answering offline');
+}
+checkPDFSelectionFlow().then(checkWorkspaceControls).then(checkChatControls).then(checkAttachmentLifecycle).then(checkPDFEscape).then(checkReadingEvidence).then(()=>console.log(`${passed} frontend source-unit checks passed. Visual/browser checks are separate.`)).catch(e=>{console.error(e);process.exitCode=1;});

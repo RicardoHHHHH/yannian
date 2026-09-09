@@ -39,7 +39,7 @@ research-assistant zotero codex fastapi local-first
 - 项目归类、Zotero 本地导入，以及本地资料完整备份。
 - 默认接入本机已登录的 Codex，可选 OpenAI Responses API。
 
-当前为本地单人版本；尚无 OCR、跨设备同步、Zotero 双向同步及流式回答。检索初筛和 idea 分析需要研究者核实。验证范围见仓库中的 `VERIFICATION.md`。
+当前为本地单人版本；尚无 OCR、跨设备同步及 Zotero 双向同步。检索初筛和 idea 分析需要研究者核实。验证范围见仓库中的 `VERIFICATION.md`。
 
 ## 重新打包
 

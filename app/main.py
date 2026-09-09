@@ -38,7 +38,7 @@ async def lifespan(app):
         await discovery.shutdown()
 
 
-app = FastAPI(title="研念 · Yannian Workbench", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="研念 · Yannian Workbench", version="0.8.1", lifespan=lifespan)
 PDF_FETCHING = set()
 URL_FETCHING = set()
 PDF_IMPORT_PROGRESS = {}
@@ -181,6 +181,8 @@ class ChatBody(BaseModel):
     question: str = Field(min_length=1, max_length=12000)
     selected_text: str = Field(default="", max_length=15000)
     include_page: bool = False
+    web_mode: Literal["auto", "on", "off"] = "auto"
+    paper_scope: Literal["full", "focused"] = "full"
     page: int = Field(default=1, ge=1, le=500)
     selection_id: str | None = None
 
@@ -226,7 +228,7 @@ class AnalyzeBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.8.0", "app": "yannian-workbench"}
+    return {"ok": True, "version": "0.8.1", "app": "yannian-workbench"}
 
 
 @app.get("/api/settings")
@@ -594,7 +596,9 @@ async def chat(body: ChatBody):
     if selection and (selection['paper_id'] != body.paper_id or selection['paragraph_id'] != body.paragraph_id):
         raise HTTPException(400, '选区与论文或段落不匹配，请重新选择。')
     selected_text = selection['text'] if selection else body.selected_text
-    paper, context, citations = ai.paper_context(body.paper_id, body.paragraph_id, body.question + " " + selected_text)
+    paper, context, citations, document = ai.paper_context(body.paper_id, body.paragraph_id, body.question + " " + selected_text, scope=body.paper_scope, with_info=True)
+    from .reading_context import network_plan
+    network = network_plan(body.question, body.web_mode, ai.settings())
     history = []
     if body.conversation_id:
         conversation = require("conversations", body.conversation_id)
@@ -611,7 +615,7 @@ async def chat(body: ChatBody):
         content.append({'type':'input_image', 'image_url':'data:image/png;base64,' + base64.b64encode(png).decode(), 'detail':'high'})
     if body.include_page:
         content.append(await asyncio.to_thread(ai.page_content, paper, body.page))
-    result = await ai.respond("这是围绕一篇论文的持续阅读对话。当前请求中的 [P数字] 映射为准，历史标记不能跨轮复用。涉及未给出的内容要说明。", history + [{"role": "user", "content": content}])
+    result = await ai.respond("这是围绕一篇论文的持续阅读对话。当前请求中的 [P数字] 映射为准，历史标记不能跨轮复用。涉及未给出的内容要说明。", history + [{"role": "user", "content": content}], web=network["enabled"])
     used = set(re.findall(r"\[P(\d+)\]", result["content"]))
     result["citations"] += [c for c in citations if c["label"][1:] in used]
     if selection:
@@ -623,6 +627,8 @@ async def chat(body: ChatBody):
         c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (db.uid(), conversation_id, "user", question, "[]", db.now()))
         c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (db.uid(), conversation_id, "assistant", result["content"], json.dumps(result["citations"], ensure_ascii=False), db.now()))
     result["conversation_id"] = conversation_id
+    network.update(searched=bool(result.get("web_searched")), status="searched" if result.get("web_searched") else "not_observed" if network["enabled"] else "off")
+    result["context_info"] = {"document": document, "network": network}
     return result
 
 

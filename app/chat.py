@@ -7,7 +7,7 @@ import threading
 import time
 
 from fastapi import HTTPException
-from . import ai, db, selections
+from . import ai, db, selections, reading_context
 
 ACTIVE = {"running", "stopping"}
 HISTORY_CHARS = 80000
@@ -143,9 +143,13 @@ async def start(body):
     if body.conversation_id and conversation(body.conversation_id)["conversation"]["paper_id"] != body.paper_id:
         raise HTTPException(400, "该对话属于另一篇论文，请新建对话。")
     selected_text = selection["text"] if selection else body.selected_text
-    paper, context, sources = ai.paper_context(body.paper_id, body.paragraph_id, body.question + " " + selected_text)
     provider, model, effort = options(body)
+    connection = (ai.settings(), ai.key())  # Private, in-memory snapshot; never persisted with the run.
+    network = reading_context.network_plan(body.question, body.web_mode, connection[0])
     previous, context_info = history(body.conversation_id)
+    query = body.question + " " + selected_text + " " + " ".join(m["content"] for m in previous[-4:])[-12000:]
+    paper, context, sources, document = ai.paper_context(body.paper_id, body.paragraph_id, query, scope=body.paper_scope, with_info=True)
+    context_info.update(document=document, network=network)
     region = bool(selection and selection["kind"] == "region")
     context_info.update(sources=sources, focus=("PDF 第 " + str(selection["page"]) + " 页图片区域" if region else selected_text or paper["title"]))
     label = "图片的辅助提取文字（可能乱序，以所附图像为准）" if region else "我选中的文字"
@@ -169,7 +173,6 @@ async def start(body):
         c.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)", (message_id, conversation_id, "assistant", "", "[]", db.now()))
         c.execute("INSERT INTO chat_runs VALUES (?,?,?,?,?,?,?)", (run_id, conversation_id, message_id, "running", json.dumps(snapshot, ensure_ascii=False), db.now(), db.now()))
     _live[run_id] = snapshot
-    connection = (ai.settings(), ai.key())  # Private, in-memory snapshot; never persisted with the run.
     _tasks[run_id] = asyncio.create_task(execute(snapshot, body, paper, selection, context, previous, question, sources, user_sources, model, connection))
     return dict(snapshot)
 
@@ -182,6 +185,9 @@ def persist(snapshot):
 
 def finish(snapshot, status, error=""):
     snapshot.update(status=status, error=error, phase={"completed": "回答完成", "stopped": "已停止", "failed": "回答失败", "interrupted": "回答中断"}[status])
+    network = snapshot.get("context_info", {}).get("network")
+    if network:
+        network["status"] = "searched" if network["searched"] else "not_observed" if network["enabled"] else "off"
     if not snapshot["content"]:
         snapshot["content"] = error or "本次回答已停止，可以继续提问。"
     persist(snapshot)
@@ -195,6 +201,10 @@ async def execute(snapshot, body, paper, selection, context, previous, question,
         if snapshot["status"] != "running":
             return
         snapshot.update({k: v for k, v in event.items() if k in ("content", "model", "phase")})
+        if event.get("web_searched"):
+            snapshot["context_info"]["network"].update(searched=True, status="searched")
+        elif event.get("web_searching"):
+            snapshot["context_info"]["network"]["status"] = "searching"
         used = set(re.findall(r"\[P(\d+)\]", snapshot["content"]))
         snapshot["citations"] = [c for c in sources if c["label"][1:] in used] + user_sources
         if time.monotonic() - last_save[0] > 1:
@@ -217,12 +227,25 @@ async def execute(snapshot, body, paper, selection, context, previous, question,
         snapshot["phase"] = "正在连接模型"
         instructions = ("这是围绕一篇论文的持续阅读对话。结合历史继续回答最后一个问题，选区可随本轮变化。"
                         "当前请求中的 [P数字] 映射为准，历史标记不能跨轮复用。历史图片仅有文字记录，不能假装仍看见其像素。"
-                        "涉及未给出的内容要说明。")
+                        "当前论文文本覆盖范围以本轮声明为准，不沿用历史回答中的缺失提示。选区只标明讨论重点，不能限制阅读其他页。"
+                        "先核查正文、实验和附录，再判断实现细节是否提供；已附入的内容不能要求用户重复上传。"
+                        "全文文本不等于看过全部图像；涉及未给出的内容要说明。")
+        if snapshot["context_info"]["network"]["enabled"]:
+            instructions += ("本轮要求联网核查：必须实际调用搜索工具，优先打开论文正式页面、作者代码与数据仓库，给出可点击来源。"
+                             "论文原文与网页核查结果分别说明，不能把检索入口当作访问证据。历史中的‘未开启联网’不适用于本轮。")
+        else:
+            instructions += "本轮不联网，只依据已附论文和历史作答，不得声称在线核查。"
         if snapshot["context_info"]["omitted_messages"]:
             instructions += "较早的部分历史因长度限制未附入本轮，不要虚构记忆。"
         result = await ai.respond(instructions, previous + [{"role": "user", "content": content}],
-                                  model=model, effort=snapshot["effort"], on_event=dispatch, connection=connection)
+                                  model=model, effort=snapshot["effort"], on_event=dispatch, connection=connection,
+                                  web=snapshot["context_info"]["network"]["enabled"])
         snapshot.update(content=result["content"], model=result.get("model") or snapshot["model"])
+        network = snapshot["context_info"]["network"]
+        searched = bool(result.get("web_searched") or network["searched"])
+        network.update(searched=searched, status="searched" if searched else "not_observed" if network["enabled"] else "off")
+        if network["enabled"] and not searched and "未检测到" not in snapshot["content"]:
+            snapshot["content"] += "\n\n> 未检测到本轮成功调用联网工具的记录；这次回答不能视为已完成在线核查。"
         used = set(re.findall(r"\[P(\d+)\]", result["content"]))
         snapshot["citations"] = result.get("citations", []) + [c for c in sources if c["label"][1:] in used] + user_sources
         finish(snapshot, "completed")

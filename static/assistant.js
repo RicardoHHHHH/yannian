@@ -18,17 +18,33 @@ function chatChoices(){
  const efforts=provider==='codex'?(selected?.efforts?.length?selected.efforts:['low','medium','high']):deepseek?(model.startsWith('deepseek-v4-')?['none','low','high','max']:[]):selected?.efforts||state.settings.api_capabilities?.efforts||[];
  let effort=saved.effort??(provider==='codex'?state.settings.codex_effort||'medium':deepseek&&model.startsWith('deepseek-v4-')?'none':'');
  if(effort&&!efforts.includes(effort))effort=provider==='codex'?selected?.default_effort||efforts[0]:'';
- return {provider,models,model,effort,efforts};
+ return {provider,models,model,effort,efforts,webMode:['auto','on','off'].includes(saved.webMode)?saved.webMode:'auto',paperScope:saved.paperScope==='focused'?'focused':'full'};
 }
 function saveChatChoices(){
  const saved=readChatStorage('yannian-chat-options');
- saved[chatOptionsKey()]={model:$('#chat-model').value.trim(),effort:$('#chat-effort').value};
+ saved[chatOptionsKey()]={model:$('#chat-model').value.trim(),effort:$('#chat-effort').value,webMode:$('#chat-web-mode')?.value||'auto',paperScope:$('#chat-paper-scope')?.value||'full'};
  writeChatStorage('yannian-chat-options',saved);renderAssistant();
 }
 function chatControls(){
  const {provider,models,model,effort,efforts}=chatChoices();
  const modelInput=provider==='codex'?`<select id="chat-model" aria-label="对话模型"><option value="">Codex 默认模型</option>${models.map(m=>`<option value="${esc(m.id)}" ${model===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}${model&&!models.some(m=>m.id===model)?`<option selected value="${esc(model)}">${esc(model)}</option>`:''}</select>`:`<input id="chat-model" aria-label="对话模型" list="chat-api-models" value="${esc(model)}" maxlength="120" placeholder="API 模型名称"><datalist id="chat-api-models">${models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}</datalist>`;
  return `<div class="chat-controls"><label>模型${modelInput}</label><label>思考深度<select id="chat-effort" aria-label="思考深度">${provider==='api'?'<option value="">模型默认</option>':''}${efforts.map(e=>`<option value="${esc(e)}" ${effort===e?'selected':''}>${esc(effortNames[e]||e)}</option>`).join('')}</select></label><button class="icon-button" id="refresh-chat-models" title="刷新可用模型" aria-label="刷新可用模型">↻</button></div>`;
+}
+function chatEvidenceControls(){
+ const {webMode,paperScope}=chatChoices(),supported=state.settings.supports_web_search??state.settings.provider==='codex';
+ return `<div class="chat-evidence-controls"><label>原文<select id="chat-paper-scope" aria-label="论文阅读范围"><option value="full" ${paperScope==='full'?'selected':''}>整篇论文</option><option value="focused" ${paperScope==='focused'?'selected':''}>检索相关段落</option></select></label><label title="自动模式会识别问题中的联网要求"><select id="chat-web-mode" aria-label="联网方式">${[['auto','自动联网'],['on','联网核查'],['off','不联网']].map(([v,t])=>`<option value="${v}" ${webMode===v?'selected':''}>${t}</option>`).join('')}</select></label></div>${supported?'':'<p class="chat-capability-note">当前接口无联网工具；需要联网时可切换 Codex。</p>'}`;
+}
+function chatEvidenceLabel(info){
+ if(!info)return '';
+ const d=info.document,n=info.network,parts=[];
+ if(d)parts.push(d.full_text?`全文文本 ${d.included_blocks}/${d.total_blocks} 段`:d.total_blocks?`部分原文 ${d.included_blocks}/${d.total_blocks} 段`:'仅元数据');
+ if(n)parts.push(n.searched?'已调用联网工具':({pending:'等待联网核查',searching:'联网核查中',not_observed:'未检测到联网记录',off:'未联网'})[n.status]||'联网核查未完成');
+ return parts.join(' · ');
+}
+function chatEvidenceDetails(info){
+ if(!info?.document)return '';
+ const d=info.document;
+ return `<h3>最近一轮资料范围</h3><p>${esc(chatEvidenceLabel(info))}</p><p class="subtle">本轮附入 ${d.included_blocks} / ${d.total_blocks} 个原文块，${d.included_chars} / ${d.total_chars} 个文字字符；涉及 ${(d.included_pages||[]).length} / ${d.total_pages} 页。${d.reason==='length_limit'?'全文超出本轮长度预算，已在整篇中检索相关原文；这轮没有覆盖所有文字。':d.reason==='focused'?'你选择了检索相关段落，可切回「整篇论文」。':''}全文文本指本地已解析文字，图表像素需另附图片，扫描页可能没有可提取文字。联网工具调用记录不代表每个网页均访问成功，具体证据以回答中的来源和限制为准。</p>`;
 }
 function selectionId(selection){return selection?.selection_id||selection?.id;}
 function repeatsImage(selection,previous){return selection.kind==='region'&&(previous?.attachments||[]).some(s=>s.kind==='region'&&selectionId(s)===selectionId(selection));}
@@ -64,12 +80,12 @@ function renderAssistant({bottom=false}={}){
  <div class="assistant-messages" id="messages" aria-label="对话记录" tabindex="0">${messageMarkup()}</div>
  <button class="chat-to-bottom" id="chat-to-bottom" ${follow?'hidden':''}>回到最新消息 ↓</button>
  <div class="chat-progress" id="chat-progress" role="status">${state.chatBusy?`${run?.phase||'正在提交问题'} · ${esc(run?.model||chatChoices().model||'Codex 默认模型')}`:''}</div>
- <div class="assistant-composer">${chatControls()}<div class="composer-box">${pendingAttachmentMarkup()}<textarea id="chat-question" maxlength="12000" aria-label="向 AI 提问" placeholder="继续追问，或选中另一段文字 / 图片…">${esc(draft)}</textarea><div class="composer-footer"><label><input type="checkbox" id="include-page" ${pageChecked?'checked':''} ${!state.paper?.has_pdf?'disabled':''}> ${selection?'再附选区所在整页':'附上本页图像'}</label>${state.chatBusy?`<button class="button stop-chat small" id="stop-chat" ${!run?.id||run?.status==='stopping'?'disabled':''}>■ ${run?.status==='stopping'?'停止中…':'停止'}</button>`:'<button class="button primary small" id="send-chat">发送 →</button>'}</div></div><p class="composer-hint">${state.settings.ready?(state.chatBusy?'可先写下一问 · 模型与思考深度从下一条生效':'Enter 发送 · Shift + Enter 换行 · 自动保存对话'):'尚未连接模型 · 点击「模型设置」'}</p></div>`;
+ <div class="assistant-composer">${chatControls()}${chatEvidenceControls()}<div class="composer-box">${pendingAttachmentMarkup()}<textarea id="chat-question" maxlength="12000" aria-label="向 AI 提问" placeholder="继续追问，或选中另一段文字 / 图片…">${esc(draft)}</textarea><div class="composer-footer"><label><input type="checkbox" id="include-page" ${pageChecked?'checked':''} ${!state.paper?.has_pdf?'disabled':''}> ${selection?'再附选区所在整页':'附上本页图像'}</label>${state.chatBusy?`<button class="button stop-chat small" id="stop-chat" ${!run?.id||run?.status==='stopping'?'disabled':''}>■ ${run?.status==='stopping'?'停止中…':'停止'}</button>`:'<button class="button primary small" id="send-chat">发送 →</button>'}</div></div><p class="composer-hint">${state.settings.ready?(state.chatBusy?'可先写下一问 · 模型与思考深度从下一条生效':'输入「联网搜寻」可自动查证 · Enter 发送 · Shift + Enter 换行'):'尚未连接模型 · 点击「模型设置」'}</p></div>`;
  state.chatRenderedKey=chatKey();
  $('#chat-question').oninput=e=>saveChatDraft(e.target.value);
  $('#chat-question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendChat();}};
  if(state.chatBusy)$('#stop-chat').onclick=stopChat;else $('#send-chat').onclick=sendChat;
- $('#chat-model').onchange=saveChatChoices;$('#chat-effort').onchange=saveChatChoices;
+ $('#chat-model').onchange=saveChatChoices;$('#chat-effort').onchange=saveChatChoices;$('#chat-web-mode').onchange=saveChatChoices;$('#chat-paper-scope').onchange=saveChatChoices;
  $('#refresh-chat-models').onclick=e=>busy(e.currentTarget,async()=>{if(state.settings.provider==='codex')await api('/codex/status',{method:'GET'});else await api('/models');state.settings=await api('/settings');renderAssistant();toast('模型列表已更新');});
  const scroll=$('#messages');scroll.scrollTop=follow?scroll.scrollHeight:position;
  scroll.onscroll=()=>{$('#chat-to-bottom').hidden=scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<70;};
@@ -77,12 +93,12 @@ function renderAssistant({bottom=false}={}){
  if(focused){$('#chat-question').focus();if(Number.isInteger(caret))$('#chat-question').setSelectionRange(caret,caret);}
 }
 function messageMarkup(){
- if(!state.messages.length)return `<div class="assistant-welcome"><div class="spark">✧</div><h3>带着一个问题开始阅读。</h3><p>选中文字、图片或公式，与我逐步讨论。<br>换选区可以接着聊，历史记录自动保存。</p><div class="prompt-suggestions">${['用直观的例子解释这里的核心思想','这一方法依赖哪些关键假设？','实验真的支持作者的结论吗？','这里有哪些值得验证的改进方向？'].map(t=>`<button data-prompt="${esc(t)}">${esc(t)} ↗</button>`).join('')}</div></div>`;
+ if(!state.messages.length)return `<div class="assistant-welcome"><div class="spark">✧</div><h3>带着一个问题开始阅读。</h3><p>选中文字、图片或公式，与我逐步讨论。<br>默认参考整篇已解析文本，换页或换选区可以接着聊。</p><div class="prompt-suggestions">${['用直观的例子解释这里的核心思想','这一方法依赖哪些关键假设？','实验真的支持作者的结论吗？','这里有哪些值得验证的改进方向？'].map(t=>`<button data-prompt="${esc(t)}">${esc(t)} ↗</button>`).join('')}</div></div>`;
  let previous=null;
  return state.messages.map((m,i)=>{
   const body=m.role==='user'?userMessageMarkup(m,previous):`<div class="message-body">${m.content?markdown(m.content,m.citations||[]):'<span class="spinner"></span> 正在思考…'}</div>`;
   if(m.role==='user')previous=m;
-  return `<div class="message ${m.role}" id="chat-message-${i}"><div class="message-label"><span>${m.role==='user'?'你的问题':'研念 · 研究伙伴'}</span>${m.role==='assistant'&&m.content?`<button class="message-action" data-save-message="${i}">保存为笔记</button>`:''}</div>${body}${m.role==='assistant'?`<div class="message-meta">${esc([m.model,effortNames[m.effort],({stopped:'已停止 · 内容未完成',failed:'生成失败',interrupted:'回答中断',running:'生成中',stopping:'正在停止'})[m.status]].filter(Boolean).join(' · '))}</div>${m.error?`<p class="chat-error">${esc(m.error)}</p>`:''}`:''}${m.citations?.length?`<div class="citations">${m.citations.filter(c=>c.type==='selection').map(c=>`<button class="source-chip" data-selection-source="${c.selection_id}">选区 · 第 ${c.page} 页 ↗</button>`).join('')}${m.citations.filter(c=>c.type==='paragraph').map(c=>`<button class="source-chip" data-action="citation" data-paragraph="${c.paragraph_id}" data-paper="${c.paper_id}">${esc(c.label)} · 第 ${c.page} 页 ↗</button>`).join('')}</div>`:''}</div>`;}).join('');
+  return `<div class="message ${m.role}" id="chat-message-${i}"><div class="message-label"><span>${m.role==='user'?'你的问题':'研念 · 研究伙伴'}</span>${m.role==='assistant'&&m.content?`<button class="message-action" data-save-message="${i}">保存为笔记</button>`:''}</div>${body}${m.role==='assistant'?`<div class="message-meta">${esc([m.model,effortNames[m.effort],chatEvidenceLabel(m.context_info),({stopped:'已停止 · 内容未完成',failed:'生成失败',interrupted:'回答中断',running:'生成中',stopping:'正在停止'})[m.status]].filter(Boolean).join(' · '))}</div>${m.error?`<p class="chat-error">${esc(m.error)}</p>`:''}`:''}${m.citations?.length?`<div class="citations">${m.citations.filter(c=>c.type==='selection').map(c=>`<button class="source-chip" data-selection-source="${c.selection_id}">选区 · 第 ${c.page} 页 ↗</button>`).join('')}${m.citations.filter(c=>c.type==='paragraph').map(c=>`<button class="source-chip" data-action="citation" data-paragraph="${c.paragraph_id}" data-paper="${c.paper_id}">${esc(c.label)} · 第 ${c.page} 页 ↗</button>`).join('')}</div>`:''}</div>`;}).join('');
 }
 function renderChatMessages(){
  if(state.view!=='reader'||state.chatRenderedKey!==chatKey())return;
@@ -112,7 +128,7 @@ async function sendChat(){
  if(state.chatBusy)return;const field=$('#chat-question'),question=field?.value.trim();if(!question)return;
  if(!state.settings.ready){settingsModal();return;}
  const choices=chatChoices(),payload={paper_id:state.paper.id,paragraph_id:state.para?.id||null,conversation_id:state.conversationId,question,selected_text:state.selectedText,
-  include_page:$('#include-page').checked,page:state.pdfSelection?.page||state.page,selection_id:state.pdfSelection?.id||null,model:choices.model,effort:choices.effort||null};
+  include_page:$('#include-page').checked,page:state.pdfSelection?.page||state.page,selection_id:state.pdfSelection?.id||null,model:choices.model,effort:choices.effort||null,web_mode:choices.webMode,paper_scope:choices.paperScope};
  const pendingMessage={role:'user',content:question,attachments:state.pdfSelection?[{...state.pdfSelection,selection_id:state.pdfSelection.id}]:[]};
  saveChatDraft(question);state.chatBusy=true;state.chatRun=null;trackedChatId=null;clearTimeout(chatTimer);renderAssistant();
  let accepted=null;
@@ -160,6 +176,6 @@ async function historyModal(){
 }
 function chatContextModal(){
  const last=[...state.messages].reverse().find(m=>m.context_info),info=last?.context_info;
- modal('对话与本轮上下文',`<p class="subtle">${info?`最近一轮带入 ${info.included_messages} / ${info.total_messages} 条历史消息${info.omitted_messages?'，较早的 '+info.omitted_messages+' 条因长度限制未附入':''}。`:'发送时会带入本次选区、检索到的原文和历史对话。'}历史记录在本机完整保留。当前选区会随追问发送；历史中的其他图片可点击缩略图重新选为当前关注。</p><h3>当前关注</h3>${focusedSelectionMarkup()}${state.pdfSelection?`<div class="selection-actions"><button data-selection-source="${esc(state.pdfSelection.id)}">回到原选区</button><button data-selection-idea="${esc(state.pdfSelection.id)}">记为 idea</button></div>`:''}${info?.sources?.length?`<h3>最近一轮参考原文</h3><div class="context-sources">${info.sources.map(c=>`<p>${esc(c.label)} · ${esc(c.title)}</p>`).join('')}</div>`:''}<h3>对话目录</h3><div class="zotero-list">${state.messages.map((m,i)=>`<button class="check-row" data-chat-jump="${i}"><span>${m.role==='user'?'你':'AI'} · ${esc((m.display_content??m.content).slice(0,140)||'正在生成…')}</span></button>`).join('')||'<p class="subtle">还没有消息。</p>'}</div>`);
+ modal('对话与本轮上下文',`<p class="subtle">${info?`最近一轮带入 ${info.included_messages} / ${info.total_messages} 条历史消息${info.omitted_messages?'，较早的 '+info.omitted_messages+' 条因长度限制未附入':''}。`:'发送时默认带入整篇已解析文本、本次选区和历史对话。'}历史记录在本机完整保留。当前选区会随追问发送；历史中的其他图片可点击缩略图重新选为当前关注。</p>${chatEvidenceDetails(info)}<h3>当前关注</h3>${focusedSelectionMarkup()}${state.pdfSelection?`<div class="selection-actions"><button data-selection-source="${esc(state.pdfSelection.id)}">回到原选区</button><button data-selection-idea="${esc(state.pdfSelection.id)}">记为 idea</button></div>`:''}${info?.sources?.length?`<h3>最近一轮参考原文</h3><div class="context-sources">${info.sources.map(c=>`<p>${esc(c.label)} · ${esc(c.title)}</p>`).join('')}</div>`:''}<h3>对话目录</h3><div class="zotero-list">${state.messages.map((m,i)=>`<button class="check-row" data-chat-jump="${i}"><span>${m.role==='user'?'你':'AI'} · ${esc((m.display_content??m.content).slice(0,140)||'正在生成…')}</span></button>`).join('')||'<p class="subtle">还没有消息。</p>'}</div>`);
  $$('[data-chat-jump]',$('#modal')).forEach(b=>b.onclick=()=>{$('#modal').close();$('#chat-message-'+b.dataset.chatJump)?.scrollIntoView({block:'start',behavior:'smooth'});});
 }

@@ -91,7 +91,7 @@ class AppServer:
                 cwd=str(db.ROOT), env=environment, bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             threading.Thread(target=self._read, daemon=True).start()
-            self.rpc("initialize", {"clientInfo": {"name": "yannian_workbench", "title": "研念", "version": "0.8.0"},
+            self.rpc("initialize", {"clientInfo": {"name": "yannian_workbench", "title": "研念", "version": "0.8.1"},
                                     "capabilities": {"experimentalApi": True}})
             self.send({"method": "initialized", "params": {}})
             return self
@@ -291,6 +291,9 @@ def run(instructions, messages, model="", effort="medium", web=False, max_tokens
                     server.active_turn = p.get("turn", {}).get("id")
                 elif method == "item/started" and p.get("item", {}).get("type") == "agentMessage":
                     items[p["item"]["id"]] = p["item"]
+                elif method == "item/started" and p.get("item", {}).get("type") == "webSearch":
+                    if on_event:
+                        on_event({"phase": "正在联网检索与核查来源", "web_searching": True})
                 elif method == "item/agentMessage/delta":
                     item_id = p.get("itemId", "message")
                     deltas[item_id] = deltas.get(item_id, "") + p.get("delta", "")
@@ -303,6 +306,8 @@ def run(instructions, messages, model="", effort="medium", web=False, max_tokens
                         items[item["id"]] = item
                     if item.get("type") == "webSearch":
                         searched = True
+                        if on_event:
+                            on_event({"phase": "已调用联网工具，正在整理证据", "web_searched": True})
                 elif method == "thread/tokenUsage/updated":
                     usage = p.get("tokenUsage")
                 elif method == "turn/completed":

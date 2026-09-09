@@ -7,7 +7,6 @@ import httpx
 from fastapi import HTTPException
 from . import db, codex_bridge, api_providers, chat_api
 from .pdf import page_png
-from .research import similarity
 
 _session_key = ""
 SYSTEM = """你是研念中的 AI 研究伙伴，帮助用户精读 AI 论文和发展顶会研究想法。默认用中文。
@@ -191,35 +190,14 @@ async def respond(instructions, messages, web=False, max_tokens=4500, model=None
         raise HTTPException(502, "模型没有返回可显示的回答，请重试或增加输出长度。")
     if raw.get("status") == "incomplete":
         output += "\n\n> 本次回答达到输出限制，内容可能尚未完成，可以继续追问。"
-    return {"content": output, "citations": citations, "usage": raw.get("usage"), "model": payload["model"], "provider": "api"}
+    return {"content": output, "citations": citations, "usage": raw.get("usage"), "model": payload["model"], "provider": "api",
+            "web_searched": any(item.get("type") == "web_search_call" and item.get("status") == "completed" for item in raw.get("output", []))}
 
 
-def paper_context(paper_id, paragraph_id, query):
-    paper = db.one("SELECT * FROM papers WHERE id=?", (paper_id,))
-    if not paper:
-        raise HTTPException(404, "论文不存在。")
-    paragraphs = db.rows("SELECT * FROM paragraphs WHERE paper_id=? ORDER BY page,ordinal", (paper_id,))
-    selection = next((i for i, p in enumerate(paragraphs) if p["id"] == paragraph_id), None)
-    if paragraph_id and selection is None:
-        raise HTTPException(400, "所选段落不属于当前论文。")
-    anchor = paragraphs[max(0, selection-2):selection+3] if selection is not None else []
-    ranked = sorted(paragraphs, key=lambda p: similarity(query, p["text"]), reverse=True)[:16]
-    picked, seen, size = [], set(), 0
-    for p in anchor + paragraphs[:8] + ranked + paragraphs[-3:]:
-        if p["id"] in seen or size + len(p["text"]) > 45000:
-            continue
-        seen.add(p["id"])
-        picked.append(p)
-        size += len(p["text"])
-    evidence = [{"type": "paragraph", "label": "P" + str(i+1), "paragraph_id": p["id"],
-                 "paper_id": paper_id, "page": p["page"], "title": "第 " + str(p["page"]) + " 页 · " + p["text"][:50]}
-                for i, p in enumerate(picked)]
-    context = f"论文标题：{paper['title']}\n作者：{paper['authors']}\n摘要/导入文本（可能来自PDF首页）：{paper['abstract'][:3500]}\n仅提供了 {len(picked)}/{len(paragraphs)} 个原文块，不代表全文已覆盖。\n"
-    if paragraph_id:
-        selected = next(p for p in paragraphs if p["id"] == paragraph_id)
-        context += "当前关注段落：" + selected["text"] + "\n"
-    context += "\n".join(f"[P{i+1}] 第 {p['page']} 页：{p['text']}" for i, p in enumerate(picked))
-    return paper, context, evidence
+def paper_context(paper_id, paragraph_id, query, *, scope="full", with_info=False):
+    from .reading_context import paper_context as build_context
+    result = build_context(paper_id, paragraph_id, query, scope)
+    return result if with_info else result[:3]
 
 
 def page_content(paper, page):

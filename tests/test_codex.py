@@ -134,6 +134,20 @@ def test_completed_without_web_search_has_explicit_limitation(monkeypatch):
     assert not result["web_searched"] and "未检测到" in result["content"]
 
 
+def test_web_tool_progress_requires_real_protocol_items(monkeypatch):
+    monkeypatch.setattr(bridge, "AppServer", FakeServer)
+    monkeypatch.setattr(FakeServer, "stream", [
+        {"method": "item/started", "params": {"item": {"id": "w", "type": "webSearch"}}},
+        {"method": "item/completed", "params": {"item": {"id": "w", "type": "webSearch"}}},
+        {"method": "turn/completed", "params": {"turn": {"status": "completed", "items": [
+            {"type": "agentMessage", "id": "a", "text": "Answer", "phase": "final_answer"}]}}},
+    ])
+    events = []
+    result = bridge.run("Test", [], web=True, on_event=events.append)
+    assert any(e.get("web_searching") for e in events)
+    assert any(e.get("web_searched") for e in events) and result["web_searched"]
+
+
 def test_failed_turn_is_not_persisted_as_success(monkeypatch):
     monkeypatch.setattr(bridge, "AppServer", FakeServer)
     monkeypatch.setattr(FakeServer, "stream", [{"method": "turn/completed", "params": {"turn": {"status": "failed", "error": {"codexErrorInfo": "UsageLimitExceeded", "message": "private-token"}}}}])
